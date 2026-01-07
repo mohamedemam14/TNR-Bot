@@ -22,15 +22,18 @@ const CONFIG = {
   RESULT_RANK_2: "1434522529506267308",
   RESULT_RANK_3: "1434519158426435678",
 
-  COURSE_ROOMS: ["1435036258266124390"],
-  EVENT_ROOMS: ["1435036088950460528"],
-  VIOLATION_ROOMS: ["1434330815990464674", "1434521224272150619", "1434514759436472451", "1434516019661242408"],
+  // غرف العمل الـ 12
+  ROOMS: [
+    "1434330815990464674", "1434330427900039343", "1434521224272150619", 
+    "1434330587480719484", "1434330953018249377", "1434330690928906280",
+    "1434514759436472451", "1434514060937924729", "1434516019661242408", 
+    "1434514183461929021", "1434514841204162650", "1434514293830717530"
+  ],
 
   LINE_LINK: "https://cdn.discordapp.com/attachments/1449506416065908816/1454546137439801354/1571650a7c706000-1.gif",
   DB_FILE: "./data/database.json"
 };
 
-// خريطة المهام: تربط ID الغرفة باسم المهمة ليتم الرصد تلقائياً
 const TASKS_MAP = {
   "1434330815990464674": "الإرشاد", "1434330427900039343": "الاستقبال",
   "1434521224272150619": "المخالفات", "1434330587480719484": "الفعاليات",
@@ -45,8 +48,14 @@ const TASKS_RANK_3 = ["الإرشاد", "الاستقبال", "المخالفا�
 
 /* ================== البوت والسيرفر ================== */
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildMembers],
-  partials: [Partials.Message, Partials.Channel]
+  intents: [
+    GatewayIntentBits.Guilds, 
+    GatewayIntentBits.GuildMessages, 
+    GatewayIntentBits.MessageContent, 
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessageReactions
+  ],
+  partials: [Partials.Message, Partials.Channel, Partials.Reaction]
 });
 
 const app = express();
@@ -57,13 +66,13 @@ app.listen(process.env.PORT || 8080);
 if (!fs.existsSync("./data")) fs.mkdirSync("./data");
 function loadDB() {
   if (!fs.existsSync(CONFIG.DB_FILE)) {
-    fs.writeFileSync(CONFIG.DB_FILE, JSON.stringify({ progress: {}, stats: { violations: 0, promoted: 0, people: {}, mainEmbedId: null, topEmbedId: null } }));
+    fs.writeFileSync(CONFIG.DB_FILE, JSON.stringify({ progress: {}, stats: { violations: 0, promoted: 0, people: {}, mainEmbedId: null } }));
   }
   return JSON.parse(fs.readFileSync(CONFIG.DB_FILE, "utf8"));
 }
 function saveDB(data) { fs.writeFileSync(CONFIG.DB_FILE, JSON.stringify(data, null, 2)); }
 
-/* ================== نظام المهام (التحديث) ================== */
+/* ================== نظام المهام الأساسي ================== */
 async function completeTask(traineeId, rank, taskName) {
   const db = loadDB();
   const key = `${traineeId}_${rank}`;
@@ -76,7 +85,7 @@ async function completeTask(traineeId, rank, taskName) {
     data.tasks = [...totalTasks];
   } else if (taskName && totalTasks.includes(taskName) && !data.tasks.includes(taskName)) {
     data.tasks.push(taskName);
-  } else if (!totalTasks.includes(taskName) && taskName !== "الكل") return;
+  } else { return; }
 
   let listString = totalTasks.map(t => `${data.tasks.includes(t) ? "✅" : "❌"} ${t}`).join("\n");
   const content = `📋 **متابعة مهام رتبة ${rank}**\n━━━━━━━━━━━━━━\n👤 المتدرب: <@${traineeId}>\n\n📝 المهام:\n${listString}\n━━━━━━━━━━━━━━\n📊 التقدم: ${data.tasks.length} / ${totalTasks.length}\n\n🔗 ${CONFIG.LINE_LINK}`;
@@ -104,58 +113,68 @@ async function completeTask(traineeId, rank, taskName) {
   updateStatsEmbeds();
 }
 
-/* ================== تحديث الإحصائيات ================== */
+/* ================== تحديث الإحصائيات العامة ================== */
 async function updateStatsEmbeds() {
-  try {
-    const db = loadDB();
-    const data = db.stats;
-    const channel = await client.channels.fetch(CONFIG.STATS_CHANNEL_ID).catch(() => null);
-    if (!channel) return;
+  const db = loadDB();
+  const data = db.stats;
+  const channel = await client.channels.fetch(CONFIG.STATS_CHANNEL_ID).catch(() => null);
+  if (!channel) return;
 
-    const guild = channel.guild;
-    const members = await guild.members.fetch(); 
-    const traineesCount = members.filter(m => m.roles.cache.has(CONFIG.RANK_1_ROLE_ID) || m.roles.cache.has(CONFIG.RANK_2_ROLE_ID)).size;
-    const totalActivities = Object.values(data.people).reduce((sum, p) => sum + (p.courses || 0) + (p.events || 0), 0);
+  const guild = channel.guild;
+  await guild.members.fetch(); 
+  const traineesCount = guild.members.cache.filter(m => m.roles.cache.has(CONFIG.RANK_1_ROLE_ID) || m.roles.cache.has(CONFIG.RANK_2_ROLE_ID)).size;
+  const totalActivities = Object.values(data.people).reduce((sum, p) => sum + (p.courses || 0) + (p.events || 0), 0);
 
-    const mainEmbed = new EmbedBuilder()
-      .setTitle("📊 إحصائيات المتابعة الأسبوعية")
-      .setDescription("يتم تحديث إحصائيات المتدربين تلقائياً بناءً على الرتب\n━━━━━━━━━━━━━━")
-      .setColor(0x5865f2)
-      .addFields(
-        { name: "👥 متدربين حاليين", value: `\`\`\`res\n${traineesCount}\`\`\``, inline: true },
-        { name: "📚 الكورسات والفعاليات", value: `\`\`\`res\n${totalActivities}\`\`\``, inline: true },
-        { name: "🚫 مخالفات وإرشاد", value: `\`\`\`res\n${data.violations}\`\`\``, inline: true },
-        { name: "⬆️ تمت ترقية", value: `\`\`\`res\n${data.promoted}\`\`\``, inline: true }
-      )
-      .setImage(CONFIG.LINE_LINK)
-      .setTimestamp();
+  const mainEmbed = new EmbedBuilder()
+    .setTitle("📊 إحصائيات المتابعة الأسبوعية")
+    .setColor(0x5865f2)
+    .addFields(
+      { name: "👥 متدربين حاليين", value: `\`\`\`res\n${traineesCount}\`\`\``, inline: true },
+      { name: "📚 الكورسات والفعاليات", value: `\`\`\`res\n${totalActivities}\`\`\``, inline: true },
+      { name: "🚫 مخالفات وإرشاد", value: `\`\`\`res\n${data.violations}\`\`\``, inline: true },
+      { name: "⬆️ تمت ترقية", value: `\`\`\`res\n${data.promoted}\`\`\``, inline: true }
+    )
+    .setImage(CONFIG.LINE_LINK);
 
-    if (data.mainEmbedId) {
-      const msg = await channel.messages.fetch(data.mainEmbedId).catch(() => null);
-      if (msg) await msg.edit({ embeds: [mainEmbed] });
-      else { const n = await channel.send({ embeds: [mainEmbed] }); data.mainEmbedId = n.id; }
-    } else { const n = await channel.send({ embeds: [mainEmbed] }); data.mainEmbedId = n.id; }
-    saveDB(db);
-  } catch (err) { console.error(err); }
+  if (data.mainEmbedId) {
+    const msg = await channel.messages.fetch(data.mainEmbedId).catch(() => null);
+    if (msg) await msg.edit({ embeds: [mainEmbed] });
+    else { const n = await channel.send({ embeds: [mainEmbed] }); data.mainEmbedId = n.id; }
+  } else { const n = await channel.send({ embeds: [mainEmbed] }); data.mainEmbedId = n.id; }
+  saveDB(db);
 }
 
-/* ================== الأحداث (Events) ================== */
+/* ================== رصد الريأكشن ================== */
+client.on(Events.MessageReactionAdd, async (reaction, user) => {
+  if (user.bot) return;
+  if (reaction.partial) await reaction.fetch();
+  
+  // التأكد أن الريأكشن تم في الغرف الـ 12
+  if (CONFIG.ROOMS.includes(reaction.message.channelId)) {
+    const member = await reaction.message.guild.members.fetch(user.id);
+    // فقط المشرف (Admin) هو من يفعل المهمة بالريأكشن
+    if (member.roles.cache.has(CONFIG.ADMIN_ROLE_ID)) {
+      const traineeId = reaction.message.author.id;
+      const traineeMember = await reaction.message.guild.members.fetch(traineeId);
+      
+      const rank = traineeMember.roles.cache.has(CONFIG.RANK_2_ROLE_ID) ? 3 : 2;
+      const taskName = TASKS_MAP[reaction.message.channelId];
+      
+      if (taskName) {
+        await completeTask(traineeId, rank, taskName);
+      }
+    }
+  }
+});
+
+/* ================== الأوامر والرسائل ================== */
 client.on(Events.MessageCreate, async message => {
   if (message.author.bot) return;
   const db = loadDB();
-  const userId = message.author.id;
 
-  // 1. الرصد التلقائي للمهام من الغرف
-  if (TASKS_MAP[message.channelId]) {
-    const taskName = TASKS_MAP[message.channelId];
-    const rank = message.member.roles.cache.has(CONFIG.RANK_2_ROLE_ID) ? 2 : 
-                 message.member.roles.cache.has(CONFIG.RANK_1_ROLE_ID) ? 2 : 3; // تعديل حسب رتبتك
-    await completeTask(userId, rank, taskName);
-  }
-
-  // 2. أمر مكمل اليدوي
+  // أمر مكمل اليدوي
   if (message.content.startsWith("مكمل")) {
-    const member = await message.guild.members.fetch(userId);
+    const member = await message.guild.members.fetch(message.author.id);
     if (!member.roles.cache.has(CONFIG.ADMIN_ROLE_ID)) return;
     const args = message.content.split(/\s+/);
     const trainee = message.mentions.members.first();
@@ -167,26 +186,20 @@ client.on(Events.MessageCreate, async message => {
     message.react("✅");
   }
 
-  // 3. أوامر الإدارة (+)
+  // أوامر التحكم اليدوي (+)
   if (message.content.startsWith("+")) {
-    const member = await message.guild.members.fetch(userId);
+    const member = await message.guild.members.fetch(message.author.id);
     if (!member.roles.cache.has(CONFIG.ADMIN_ROLE_ID)) return;
     const args = message.content.split(/\s+/);
     const command = args[0];
-    const target = message.mentions.members.first();
     const amount = parseInt(args.find(a => !isNaN(a) && a.length < 5)) || 1;
 
     if (command === "+reset") {
       db.stats = { violations: 0, promoted: 0, people: {}, mainEmbedId: db.stats.mainEmbedId };
-      saveDB(db); await updateStatsEmbeds(); return message.reply("✅ تم التصفير.");
+      saveDB(db); await updateStatsEmbeds(); return message.reply("✅ تم تصفير الأسبوع.");
     }
-    if (command === "+كورس" && target) {
-      if (!db.stats.people[target.id]) db.stats.people[target.id] = { name: target.displayName, courses: 0, events: 0 };
-      db.stats.people[target.id].courses += amount;
-      message.reply(`✅ تم إضافة ${amount} كورس لـ ${target.displayName}`);
-    }
-    saveDB(db); updateStatsEmbeds();
   }
 });
 
+client.once(Events.ClientReady, () => { console.log(`🚀 System Online: ${client.user.tag}`); updateStatsEmbeds(); });
 client.login(CONFIG.TOKEN);

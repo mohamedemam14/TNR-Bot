@@ -121,8 +121,8 @@ async function updateStatsEmbeds() {
   if (!channel) return;
 
   const guild = channel.guild;
-  await guild.members.fetch(); 
-  const traineesCount = guild.members.cache.filter(m => m.roles.cache.has(CONFIG.RANK_1_ROLE_ID) || m.roles.cache.has(CONFIG.RANK_2_ROLE_ID)).size;
+  const members = await guild.members.fetch(); 
+  const traineesCount = members.filter(m => m.roles.cache.has(CONFIG.RANK_1_ROLE_ID) || m.roles.cache.has(CONFIG.RANK_2_ROLE_ID)).size;
   const totalActivities = Object.values(data.people).reduce((sum, p) => sum + (p.courses || 0) + (p.events || 0), 0);
 
   const mainEmbed = new EmbedBuilder()
@@ -144,19 +144,25 @@ async function updateStatsEmbeds() {
   saveDB(db);
 }
 
-/* ================== رصد الريأكشن ================== */
+/* ================== رصد الريأكشن ✅ ================== */
 client.on(Events.MessageReactionAdd, async (reaction, user) => {
   if (user.bot) return;
+  
+  // التأكد أن الإيموجي هو ✅
+  if (reaction.emoji.name !== "✅") return;
+
   if (reaction.partial) await reaction.fetch();
   
-  // التأكد أن الريأكشن تم في الغرف الـ 12
   if (CONFIG.ROOMS.includes(reaction.message.channelId)) {
     const member = await reaction.message.guild.members.fetch(user.id);
-    // فقط المشرف (Admin) هو من يفعل المهمة بالريأكشن
+    
+    // التحقق من رتبة الإدارة التي تضع الريأكشن
     if (member.roles.cache.has(CONFIG.ADMIN_ROLE_ID)) {
       const traineeId = reaction.message.author.id;
-      const traineeMember = await reaction.message.guild.members.fetch(traineeId);
-      
+      const traineeMember = await reaction.message.guild.members.fetch(traineeId).catch(() => null);
+      if (!traineeMember) return;
+
+      // تحديد الرتبة بناءً على رتبة المتدرب الحالية
       const rank = traineeMember.roles.cache.has(CONFIG.RANK_2_ROLE_ID) ? 3 : 2;
       const taskName = TASKS_MAP[reaction.message.channelId];
       
@@ -167,12 +173,11 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
   }
 });
 
-/* ================== الأوامر والرسائل ================== */
+/* ================== الأوامر ================== */
 client.on(Events.MessageCreate, async message => {
   if (message.author.bot) return;
   const db = loadDB();
 
-  // أمر مكمل اليدوي
   if (message.content.startsWith("مكمل")) {
     const member = await message.guild.members.fetch(message.author.id);
     if (!member.roles.cache.has(CONFIG.ADMIN_ROLE_ID)) return;
@@ -186,20 +191,26 @@ client.on(Events.MessageCreate, async message => {
     message.react("✅");
   }
 
-  // أوامر التحكم اليدوي (+)
   if (message.content.startsWith("+")) {
     const member = await message.guild.members.fetch(message.author.id);
     if (!member.roles.cache.has(CONFIG.ADMIN_ROLE_ID)) return;
     const args = message.content.split(/\s+/);
     const command = args[0];
+    const target = message.mentions.members.first();
     const amount = parseInt(args.find(a => !isNaN(a) && a.length < 5)) || 1;
 
     if (command === "+reset") {
       db.stats = { violations: 0, promoted: 0, people: {}, mainEmbedId: db.stats.mainEmbedId };
       saveDB(db); await updateStatsEmbeds(); return message.reply("✅ تم تصفير الأسبوع.");
     }
+    if (command === "+كورس" && target) {
+        if (!db.stats.people[target.id]) db.stats.people[target.id] = { name: target.displayName, courses: 0, events: 0 };
+        db.stats.people[target.id].courses += amount;
+        message.reply(`✅ تم إضافة ${amount} كورس لـ ${target.displayName}`);
+    }
+    saveDB(db); updateStatsEmbeds();
   }
 });
 
-client.once(Events.ClientReady, () => { console.log(`🚀 System Online: ${client.user.tag}`); updateStatsEmbeds(); });
+client.once(Events.ClientReady, () => { updateStatsEmbeds(); });
 client.login(CONFIG.TOKEN);

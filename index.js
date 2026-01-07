@@ -14,15 +14,13 @@ import express from "express";
 const CONFIG = {
   TOKEN: process.env.TOKEN,
   ADMIN_ROLE_ID: "1457403586005831872",
-  STATS_CHANNEL_ID: "1458097832232882308", // روم الإحصائيات
-  FOLLOW_CHANNEL_ID: "1435287030484697128", // روم متابعة المهام
-  FINAL_UPGRADE_CHANNEL_ID: "1457888039673270515", // روم الترقية النهائي
+  STATS_CHANNEL_ID: "1458097832232882308",
+  FOLLOW_CHANNEL_ID: "1435287030484697128",
+  FINAL_UPGRADE_CHANNEL_ID: "1457888039673270515",
   
-  // رومات النتائج
   RESULT_RANK_2: "1434522529506267308",
   RESULT_RANK_3: "1434519158426435678",
 
-  // رومات النشاط (للإحصائيات)
   COURSE_ROOMS: ["1435036258266124390"],
   EVENT_ROOMS: ["1435036088950460528"],
   VIOLATION_ROOMS: ["1434330815990464674", "1434521224272150619", "1434514759436472451", "1434516019661242408"],
@@ -66,7 +64,7 @@ function loadDB() {
 }
 function saveDB(data) { fs.writeFileSync(CONFIG.DB_FILE, JSON.stringify(data, null, 2)); }
 
-/* ================== وظائف الإحصائيات الأسبوعية ================== */
+/* ================== تحديث الإمبدات ================== */
 async function updateStatsEmbeds() {
   try {
     const db = loadDB();
@@ -76,14 +74,17 @@ async function updateStatsEmbeds() {
 
     const mainEmbed = {
       title: "📊 إحصائيات المتابعة الأسبوعية",
+      description: "تم تحديث البيانات بناءً على نشاط الإدارة والمتدربين\n━━━━━━━━━━━━━━",
       color: 0x5865f2,
       fields: [
-        { name: "👥 متدربين جدد", value: `\`${data.trainees.length}\``, inline: true },
-        { name: "📚 أنشطة", value: `\`${data.activities}\``, inline: true },
-        { name: "🚫 مخالفات", value: `\`${data.violations}\``, inline: true },
-        { name: "⬆️ ترقيات", value: `\`${data.promoted}\``, inline: true }
+        { name: "👥 متدربين جدد", value: `\`\`\`res\n${data.trainees.length}\`\`\``, inline: true },
+        { name: "📚 الأنشطة", value: `\`\`\`res\n${data.activities}\`\`\``, inline: true },
+        { name: "🚫 مخالفات وإرشاد", value: `\`\`\`res\n${data.violations}\`\`\``, inline: true },
+        { name: "⬆️ ترقيات", value: `\`\`\`res\n${data.promoted}\`\`\``, inline: true }
       ],
-      timestamp: new Date()
+      image: { url: CONFIG.LINE_LINK },
+      timestamp: new Date(),
+      footer: { text: "نظام الإحصائيات التلقائي" }
     };
 
     const row = new ActionRowBuilder().addComponents(
@@ -91,11 +92,15 @@ async function updateStatsEmbeds() {
     );
 
     const sorted = Object.values(data.people).sort((a, b) => (b.courses + b.events) - (a.courses + a.events));
-    const listDescription = sorted.length ? sorted.slice(0, 15).map((p, i) => `**${i + 1}. ${p.name}**\n📚 كورسات: ${p.courses} | 🎯 فعاليات: ${p.events}`).join("\n\n") : "لا يوجد بيانات";
+    const listDescription = sorted.length ? sorted.slice(0, 15).map((p, i) => `**${i + 1}. ${p.name}**\n📚 كورسات: ${p.courses} | 🎯 فعاليات: ${p.events}`).join("\n\n") : "لا يوجد بيانات نشاط حالياً";
 
-    const topEmbed = { title: "🏆 قائمة النشاط", color: 0xf1c40f, description: listDescription };
+    const topEmbed = { 
+      title: "🏆 قائمة النشاط (الكورسات والفعاليات)", 
+      color: 0xf1c40f, 
+      description: listDescription,
+      footer: { text: "يتم الترتيب تلقائياً حسب الأكثر نشاطاً" }
+    };
 
-    // تحديث الرسائل أو إرسالها
     if (data.mainEmbedId) {
       const msg = await channel.messages.fetch(data.mainEmbedId).catch(() => null);
       if (msg) await msg.edit({ embeds: [mainEmbed], components: [row] });
@@ -113,7 +118,7 @@ async function updateStatsEmbeds() {
   } catch (err) { console.error("Stats Update Error:", err); }
 }
 
-/* ================== وظائف نظام المهام ================== */
+/* ================== نظام المهام ================== */
 async function completeTask(traineeId, rank, taskName) {
   const db = loadDB();
   const key = `${traineeId}_${rank}`;
@@ -153,7 +158,6 @@ async function completeTask(traineeId, rank, taskName) {
 /* ================== الأحداث (Events) ================== */
 client.on(Events.MessageCreate, async message => {
   if (message.author.bot) {
-    // رصد الترقيات من البوتات الأخرى في روم الترقية
     if (message.channelId === CONFIG.FINAL_UPGRADE_CHANNEL_ID) {
       const db = loadDB();
       db.stats.promoted++;
@@ -166,7 +170,37 @@ client.on(Events.MessageCreate, async message => {
   const db = loadDB();
   const userId = message.author.id;
 
-  // 1. نظام "مكمل"
+  // 1. الأوامر اليدوية للإحصائيات (+متدرب، +نشاط، إلخ)
+  if (message.content.startsWith("+")) {
+    const member = await message.guild.members.fetch(userId);
+    if (!member.roles.cache.has(CONFIG.ADMIN_ROLE_ID)) return;
+
+    const args = message.content.split(/\s+/);
+    const command = args[0];
+    const amount = parseInt(args[1]) || 1;
+
+    if (command === "+متدرب") {
+      for(let i=0; i<amount; i++) db.stats.trainees.push(`m_${Date.now()}_${i}`);
+      message.reply(`✅ تمت إضافة ${amount} متدرب.`);
+    } 
+    else if (command === "+نشاط") {
+      db.stats.activities += amount;
+      message.reply(`✅ تمت إضافة ${amount} نشاط.`);
+    } 
+    else if (command === "+مخالفة") {
+      db.stats.violations += amount;
+      message.reply(`✅ تمت إضافة ${amount} مخالفة.`);
+    } 
+    else if (command === "+ترقية") {
+      db.stats.promoted += amount;
+      message.reply(`✅ تمت إضافة ${amount} ترقية.`);
+    }
+    saveDB(db);
+    updateStatsEmbeds();
+    return;
+  }
+
+  // 2. نظام "مكمل"
   if (message.content.startsWith("مكمل")) {
     const member = await message.guild.members.fetch(userId);
     if (!member.roles.cache.has(CONFIG.ADMIN_ROLE_ID)) return;
@@ -183,7 +217,7 @@ client.on(Events.MessageCreate, async message => {
     return;
   }
 
-  // 2. تحديث إحصائيات الأنشطة
+  // 3. رصد الكورسات والفعاليات تلقائياً
   const isCourse = CONFIG.COURSE_ROOMS.includes(message.channelId) && message.attachments.size > 0;
   const isEvent = CONFIG.EVENT_ROOMS.includes(message.channelId);
 
@@ -201,17 +235,15 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
   if (user.bot || reaction.emoji.name !== "✅") return;
   const db = loadDB();
   const msg = await reaction.message.fetch();
-  const member = await msg.guild.members.fetch(user.id);
-  if (!member.roles.cache.has(CONFIG.ADMIN_ROLE_ID)) return;
+  const member = await msg.guild.members.fetch(user.id).catch(() => null);
+  if (!member || !member.roles.cache.has(CONFIG.ADMIN_ROLE_ID)) return;
 
-  // ريأكشن المهام
   const rank = TASKS_RANK_2[msg.channelId] ? 2 : TASKS_RANK_3[msg.channelId] ? 3 : null;
   if (rank) {
     const task = (rank === 2 ? TASKS_RANK_2 : TASKS_RANK_3)[msg.channelId];
     await completeTask(msg.author.id, rank, task);
   }
 
-  // ريأكشن المخالفات (لصالح الإحصائيات)
   if (CONFIG.VIOLATION_ROOMS.includes(msg.channelId)) {
     db.stats.violations++;
     saveDB(db);
@@ -230,8 +262,9 @@ client.on(Events.InteractionCreate, async i => {
 });
 
 client.once(Events.ClientReady, () => {
-  console.log(`🚀 System Integrated & Ready: ${client.user.tag}`);
+  console.log(`🚀 TNR System Integrated: ${client.user.tag}`);
   updateStatsEmbeds();
 });
 
+process.on("unhandledRejection", e => console.error(e));
 client.login(CONFIG.TOKEN);

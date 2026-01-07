@@ -47,7 +47,13 @@ const TASKS_RANK_3 = {
 
 /* ================== البوت والسيرفر ================== */
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.GuildMessageReactions, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildMembers],
+  intents: [
+    GatewayIntentBits.Guilds, 
+    GatewayIntentBits.GuildMessages, 
+    GatewayIntentBits.GuildMessageReactions, 
+    GatewayIntentBits.MessageContent, 
+    GatewayIntentBits.GuildMembers 
+  ],
   partials: [Partials.Message, Partials.Channel, Partials.Reaction]
 });
 
@@ -68,6 +74,45 @@ function loadDB() {
 }
 function saveDB(data) { fs.writeFileSync(CONFIG.DB_FILE, JSON.stringify(data, null, 2)); }
 
+/* ================== نظام المهام ================== */
+async function completeTask(traineeId, rank, taskName) {
+  const db = loadDB();
+  const key = `${traineeId}_${rank}`;
+  if (!db.progress[key]) db.progress[key] = { tasks: [], followMessageId: null, resultSent: false };
+
+  const data = db.progress[key];
+  const tasksList = rank === 2 ? TASKS_RANK_2 : TASKS_RANK_3;
+  const totalTasks = Object.values(tasksList);
+
+  if (taskName === "الكل") {
+    data.tasks = [...totalTasks];
+  } else if (taskName && !data.tasks.includes(taskName)) {
+    data.tasks.push(taskName);
+  }
+
+  let listString = totalTasks.map(t => `${data.tasks.includes(t) ? "✅" : "❌"} ${t}`).join("\n");
+  const content = `📋 **متابعة مهام رتبة ${rank}**\n━━━━━━━━━━━━━━\n👤 المتدرب: <@${traineeId}>\n\n📝 المهام:\n${listString}\n━━━━━━━━━━━━━━\n📊 التقدم: ${data.tasks.length} / ${totalTasks.length}\n\n🔗 ${CONFIG.LINE_LINK}`;
+
+  const followChannel = await client.channels.fetch(CONFIG.FOLLOW_CHANNEL_ID);
+  if (data.followMessageId) {
+    const m = await followChannel.messages.fetch(data.followMessageId).catch(() => null);
+    if (m) await m.edit({ content });
+    else { const s = await followChannel.send({ content }); data.followMessageId = s.id; }
+  } else { const s = await followChannel.send({ content }); data.followMessageId = s.id; }
+
+  if (data.tasks.length === totalTasks.length && !data.resultSent) {
+    data.resultSent = true;
+    const resCh = await client.channels.fetch(rank === 2 ? CONFIG.RESULT_RANK_2 : CONFIG.RESULT_RANK_3);
+    await resCh.send(`🎉 **جاهز للترقية**\n👤 المتدرب: <@${traineeId}>\n🏅 الرتبة: ${rank}\n\n🔗 ${CONFIG.LINE_LINK}`);
+    
+    const finalCh = await client.channels.fetch(CONFIG.FINAL_UPGRADE_CHANNEL_ID);
+    await finalCh.send(`**\n- إسم المتدرب : <@${traineeId}>\n- الرتبة الحالية : ${rank}\n\n- جاهز للترقية : ✅\n**`);
+    db.stats.promoted++;
+  }
+  saveDB(db);
+  updateStatsEmbeds();
+}
+
 /* ================== تحديث الإمبدات ================== */
 async function updateStatsEmbeds() {
   try {
@@ -78,7 +123,10 @@ async function updateStatsEmbeds() {
 
     const guild = channel.guild;
     await guild.members.fetch(); 
-    const traineesCount = guild.members.cache.filter(m => m.roles.cache.has(CONFIG.RANK_1_ROLE_ID) || m.roles.cache.has(CONFIG.RANK_2_ROLE_ID)).size;
+    const traineesCount = guild.members.cache.filter(m => 
+      m.roles.cache.has(CONFIG.RANK_1_ROLE_ID) || m.roles.cache.has(CONFIG.RANK_2_ROLE_ID)
+    ).size;
+
     const totalActivities = Object.values(data.people).reduce((sum, p) => sum + (p.courses || 0) + (p.events || 0), 0);
 
     const mainEmbed = {
@@ -104,7 +152,9 @@ async function updateStatsEmbeds() {
 
     let listDescription = "";
     if (sortedIds.length > 0) {
-      listDescription += `🌟 **نجم الأسبوع:** <@${sortedIds[0]}>\n━━━━━━━━━━━━━━\n`;
+      const topUserId = sortedIds[0];
+      listDescription += `🌟 **نجم الأسبوع:** <@${topUserId}>\n━━━━━━━━━━━━━━\n`;
+
       listDescription += sortedIds.slice(0, 15).map((id, i) => {
         const p = data.people[id];
         const total = (p.courses || 0) + (p.events || 0);
@@ -134,41 +184,6 @@ async function updateStatsEmbeds() {
   } catch (err) { console.error("Stats Update Error:", err); }
 }
 
-/* ================== نظام المهام ================== */
-async function completeTask(traineeId, rank, taskName) {
-  const db = loadDB();
-  const key = `${traineeId}_${rank}`;
-  if (!db.progress[key]) db.progress[key] = { tasks: [], followMessageId: null, resultSent: false };
-
-  const data = db.progress[key];
-  const tasksList = rank === 2 ? TASKS_RANK_2 : TASKS_RANK_3;
-  const totalTasks = Object.values(tasksList);
-
-  if (taskName === "الكل") data.tasks = [...totalTasks];
-  else if (taskName && !data.tasks.includes(taskName)) data.tasks.push(taskName);
-
-  let listString = totalTasks.map(t => `${data.tasks.includes(t) ? "✅" : "❌"} ${t}`).join("\n");
-  const content = `📋 **متابعة مهام رتبة ${rank}**\n━━━━━━━━━━━━━━\n👤 المتداب: <@${traineeId}>\n\n📝 المهام:\n${listString}\n━━━━━━━━━━━━━━\n📊 التقدم: ${data.tasks.length} / ${totalTasks.length}\n\n🔗 ${CONFIG.LINE_LINK}`;
-
-  const followChannel = await client.channels.fetch(CONFIG.FOLLOW_CHANNEL_ID);
-  if (data.followMessageId) {
-    const m = await followChannel.messages.fetch(data.followMessageId).catch(() => null);
-    if (m) await m.edit({ content });
-    else { const s = await followChannel.send({ content }); data.followMessageId = s.id; }
-  } else { const s = await followChannel.send({ content }); data.followMessageId = s.id; }
-
-  if (data.tasks.length === totalTasks.length && !data.resultSent) {
-    data.resultSent = true;
-    const resCh = await client.channels.fetch(rank === 2 ? CONFIG.RESULT_RANK_2 : CONFIG.RESULT_RANK_3);
-    await resCh.send(`🎉 **جاهز للترقية**\n👤 المتدرب: <@${traineeId}>\n🏅 الرتبة: ${rank}\n\n🔗 ${CONFIG.LINE_LINK}`);
-    const finalCh = await client.channels.fetch(CONFIG.FINAL_UPGRADE_CHANNEL_ID);
-    await finalCh.send(`**\n- إسم المتدرب : <@${traineeId}>\n- الرتبة الحالية : ${rank}\n\n- جاهز للترقية : ✅\n**`);
-    db.stats.promoted++;
-  }
-  saveDB(db);
-  updateStatsEmbeds();
-}
-
 /* ================== الأحداث (Events) ================== */
 client.on(Events.MessageCreate, async message => {
   if (message.author.bot) return;
@@ -176,75 +191,106 @@ client.on(Events.MessageCreate, async message => {
   const db = loadDB();
   const userId = message.author.id;
 
-  // 1. أمر الهيلب
+  // أمر الهيلب (Help)
   if (message.content === "+help") {
-    const helpEmbed = new EmbedBuilder().setTitle("📖 قائمة التحكم").setColor(0x00ffcc)
+    const helpEmbed = new EmbedBuilder()
+      .setTitle("📖 قائمة أوامر التحكم في البوت")
+      .setColor(0x00ffcc)
       .addFields(
-        { name: "⭐ نشاط", value: "`+كورس/كورسات @user [عدد]`\n`+فعالية @user [عدد]`", inline: true },
-        { name: "➕ يدوية", value: "`+مخالفة [عدد]`\n`+ترقية [عدد]`", inline: true },
-        { name: "🧹 تصفير", value: "`+reset`", inline: true },
-        { name: "✅ مهام", value: "`مكمل @user [الرتبة]`\n`مكمل @user [اسم المهمة] [الرتبة]`", inline: false }
-      );
+        { name: "⭐ نشاط الأعضاء", value: "`+كورس @user [العدد]`\n`+فعالية @user [العدد]`", inline: true },
+        { name: "➕ إحصائيات يدوية", value: "`+مخالفة [العدد]`\n`+ترقية [العدد]`", inline: true },
+        { name: "✅ نظام المهام", value: "`مكمل @user [الرتبة]`\n`مكمل @user [اسم المهمة] [الرتبة]`", inline: false },
+        { name: "🧹 أوامر التصفير", value: "`+reset` (لتصفير الإحصائيات)", inline: true }
+      )
+      .setImage(CONFIG.LINE_LINK);
     return message.reply({ embeds: [helpEmbed] });
   }
 
-  // 2. أوامر الإحصائيات (+)
-  if (message.content.startsWith("+")) {
-    const member = await message.guild.members.fetch(userId);
-    if (!member.roles.cache.has(CONFIG.ADMIN_ROLE_ID)) return;
-    const args = message.content.split(/\s+/);
-    const command = args[0];
-    const target = message.mentions.members.first();
-    const amount = parseInt(args.find(a => !isNaN(a))) || 1;
-
-    if (command === "+reset") {
-      db.stats = { violations: 0, promoted: 0, people: {}, mainEmbedId: db.stats.mainEmbedId, topEmbedId: db.stats.topEmbedId };
-      saveDB(db); await updateStatsEmbeds();
-      return message.reply("✅ تم التصفير.");
-    }
-    if ((command === "+كورس" || command === "+كورسات") && target) {
-      if (!db.stats.people[target.id]) db.stats.people[target.id] = { name: target.displayName, courses: 0, events: 0 };
-      db.stats.people[target.id].courses += amount;
-      message.reply(`✅ تمت إضافة ${amount} كورس لـ ${target.displayName}`);
-    } else if (command === "+فعالية" && target) {
-      if (!db.stats.people[target.id]) db.stats.people[target.id] = { name: target.displayName, courses: 0, events: 0 };
-      db.stats.people[target.id].events += amount;
-      message.reply(`✅ تمت إضافة ${amount} فعالية لـ ${target.displayName}`);
-    } else if (command === "+مخالفة") { db.stats.violations += amount; message.reply(`✅ تمت إضافة ${amount} مخالفة.`); }
-    else if (command === "+ترقية") { db.stats.promoted += amount; message.reply(`✅ تمت إضافة ${amount} ترقية.`); }
-    saveDB(db); updateStatsEmbeds();
-    return;
-  }
-
-  // 3. نظام مكمل
+  // نظام مكمل
   if (message.content.startsWith("مكمل")) {
     const member = await message.guild.members.fetch(userId);
     if (!member.roles.cache.has(CONFIG.ADMIN_ROLE_ID)) return;
+
     const args = message.content.split(/\s+/);
     const trainee = message.mentions.members.first();
     const rank = parseInt(args[args.length - 1]);
+
     if (!trainee || ![2, 3].includes(rank)) return;
 
-    let taskPart = message.content.replace("مكمل", "").replace(`<@${trainee.id}>`, "").replace(`<@!${trainee.id}>`, "").replace(rank.toString(), "").trim();
-    if (!taskPart) taskPart = "الكل";
-    
-    const validTasks = Object.values(rank === 2 ? TASKS_RANK_2 : TASKS_RANK_3);
-    if (taskPart === "الكل" || validTasks.includes(taskPart)) {
-      await completeTask(trainee.id, rank, taskPart);
-      message.react("✅");
-    }
+    // استخراج اسم المهمة إذا وجد
+    let taskPart = message.content
+      .replace("مكمل", "")
+      .replace(`<@${trainee.id}>`, "")
+      .replace(`<@!${trainee.id}>`, "")
+      .replace(rank.toString(), "")
+      .trim();
+
+    const taskName = taskPart === "" ? "الكل" : taskPart;
+    await completeTask(trainee.id, rank, taskName);
+    message.react("✅");
+    return;
   }
 
-  // 4. الرصد التلقائي
+  // الأوامر اليدوية (+)
+  if (message.content.startsWith("+")) {
+    const member = await message.guild.members.fetch(userId);
+    if (!member.roles.cache.has(CONFIG.ADMIN_ROLE_ID)) return;
+
+    const args = message.content.split(/\s+/);
+    const command = args[0];
+    const target = message.mentions.members.first();
+    
+    let amount = 1;
+    const potentialAmount = args.find(arg => !isNaN(arg) && arg.trim() !== "");
+    if (potentialAmount) amount = parseInt(potentialAmount);
+
+    if (command === "+reset") {
+      db.stats = { violations: 0, promoted: 0, people: {}, mainEmbedId: db.stats.mainEmbedId, topEmbedId: db.stats.topEmbedId };
+      saveDB(db);
+      await updateStatsEmbeds();
+      return message.reply("✅ تم تصفير إحصائيات الأسبوع.");
+    }
+
+    if (command === "+كورس" && target) {
+      if (!db.stats.people[target.id]) db.stats.people[target.id] = { name: target.displayName, courses: 0, events: 0 };
+      db.stats.people[target.id].courses += amount;
+      message.reply(`✅ تمت إضافة ${amount} كورس لـ ${target.displayName}`);
+    } 
+    else if (command === "+فعالية" && target) {
+      if (!db.stats.people[target.id]) db.stats.people[target.id] = { name: target.displayName, courses: 0, events: 0 };
+      db.stats.people[target.id].events += amount;
+      message.reply(`✅ تمت إضافة ${amount} فعالية لـ ${target.displayName}`);
+    }
+    else if (command === "+مخالفة") {
+      db.stats.violations += amount;
+      message.reply(`✅ تمت إضافة ${amount} مخالفة.`);
+    } 
+    else if (command === "+ترقية") {
+      db.stats.promoted += amount;
+      message.reply(`✅ تمت إضافة ${amount} ترقية.`);
+    }
+
+    saveDB(db);
+    updateStatsEmbeds();
+    return;
+  }
+
+  // الحساب التلقائي من الرومات
   const isCourse = CONFIG.COURSE_ROOMS.includes(message.channelId) && message.attachments.size > 0;
   const isEvent = CONFIG.EVENT_ROOMS.includes(message.channelId);
+
   if (isCourse || isEvent) {
     if (!db.stats.people[userId]) db.stats.people[userId] = { name: message.member.displayName, courses: 0, events: 0 };
     if (isCourse) db.stats.people[userId].courses++;
     if (isEvent) db.stats.people[userId].events++;
-    saveDB(db); updateStatsEmbeds();
+    saveDB(db);
+    updateStatsEmbeds();
   }
 });
 
-client.once(Events.ClientReady, () => { updateStatsEmbeds(); console.log(`🚀 Ready: ${client.user.tag}`); });
+client.once(Events.ClientReady, () => {
+  console.log(`🚀 System Ready: ${client.user.tag}`);
+  updateStatsEmbeds();
+});
+
 client.login(CONFIG.TOKEN);

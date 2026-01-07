@@ -83,7 +83,7 @@ async function updateStatsEmbeds() {
       fields: [
         { name: "👥 متدربين جدد", value: `\`\`\`res\n${data.trainees.length}\`\`\``, inline: true },
         { name: "📚 الكورسات والفعاليات", value: `\`\`\`res\n${totalActivities}\`\`\``, inline: true },
-        { name: "🚫 مخالفات إجمالية", value: `\`\`\`res\n${data.violations}\`\`\``, inline: true },
+        { name: "🚫 مخالفات و إرشاد", value: `\`\`\`res\n${data.violations}\`\`\``, inline: true },
         { name: "⬆️ ترقيات", value: `\`\`\`res\n${data.promoted}\`\`\``, inline: true }
       ],
       image: { url: CONFIG.LINE_LINK },

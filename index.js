@@ -57,7 +57,7 @@ function loadDB() {
   if (!fs.existsSync(CONFIG.DB_FILE)) {
     fs.writeFileSync(CONFIG.DB_FILE, JSON.stringify({ 
       progress: {}, 
-      stats: { trainees: [], activities: 0, violations: 0, promoted: 0, people: {}, mainEmbedId: null, topEmbedId: null } 
+      stats: { trainees: [], violations: 0, promoted: 0, people: {}, mainEmbedId: null, topEmbedId: null } 
     }));
   }
   return JSON.parse(fs.readFileSync(CONFIG.DB_FILE, "utf8"));
@@ -72,13 +72,17 @@ async function updateStatsEmbeds() {
     const channel = await client.channels.fetch(CONFIG.STATS_CHANNEL_ID).catch(() => null);
     if (!channel) return;
 
+    const totalCourses = Object.values(data.people).reduce((sum, p) => sum + (p.courses || 0), 0);
+    const totalEvents = Object.values(data.people).reduce((sum, p) => sum + (p.events || 0), 0);
+
     const mainEmbed = {
       title: "📊 إحصائيات المتابعة الأسبوعية",
       description: "تم تحديث البيانات بناءً على نشاط الإدارة والمتدربين\n━━━━━━━━━━━━━━",
       color: 0x5865f2,
       fields: [
         { name: "👥 متدربين جدد", value: `\`\`\`res\n${data.trainees.length}\`\`\``, inline: true },
-        { name: "📚 الأنشطة", value: `\`\`\`res\n${data.activities}\`\`\``, inline: true },
+        { name: "📚 الكورسات", value: `\`\`\`res\n${totalCourses}\`\`\``, inline: true },
+        { name: "🎯 الفعاليات", value: `\`\`\`res\n${totalEvents}\`\`\``, inline: true },
         { name: "🚫 مخالفات وإرشاد", value: `\`\`\`res\n${data.violations}\`\`\``, inline: true },
         { name: "⬆️ ترقيات", value: `\`\`\`res\n${data.promoted}\`\`\``, inline: true }
       ],
@@ -91,14 +95,38 @@ async function updateStatsEmbeds() {
       new ButtonBuilder().setCustomId("reset_week").setLabel("تصفير الأسبوع").setStyle(ButtonStyle.Danger)
     );
 
-    const sorted = Object.values(data.people).sort((a, b) => (b.courses + b.events) - (a.courses + a.events));
-    const listDescription = sorted.length ? sorted.slice(0, 15).map((p, i) => `**${i + 1}. ${p.name}**\n📚 كورسات: ${p.courses} | 🎯 فعاليات: ${p.events}`).join("\n\n") : "لا يوجد بيانات نشاط حالياً";
+    const sortedIds = Object.keys(data.people).sort((a, b) => {
+      const totalA = data.people[a].courses + data.people[a].events;
+      const totalB = data.people[b].courses + data.people[b].events;
+      return totalB - totalA;
+    });
+
+    let listDescription = "";
+    if (sortedIds.length > 0) {
+      const topUserId = sortedIds[0];
+      listDescription += `🌟 **نجم الأسبوع:** <@${topUserId}>\n━━━━━━━━━━━━━━\n`;
+
+      listDescription += sortedIds.slice(0, 15).map((id, i) => {
+        const p = data.people[id];
+        const total = p.courses + p.events;
+        let rating = "";
+        
+        if (total >= 10) rating = "💎 ممتاز";
+        else if (total >= 6) rating = "✅ جيد جداً";
+        else if (total >= 3) rating = "⚠️ جيد";
+        else rating = "❌ ضعيف";
+
+        return `**${i + 1}. ${p.name}**\n📚 كورسات: ${p.courses} | 🎯 فعاليات: ${p.events}\nالتقييم: \`${rating}\``;
+      }).join("\n\n");
+    } else {
+      listDescription = "لا يوجد بيانات نشاط حالياً";
+    }
 
     const topEmbed = { 
-      title: "🏆 قائمة النشاط (الكورسات والفعاليات)", 
+      title: "🏆 قائمة النشاط والتميز", 
       color: 0xf1c40f, 
       description: listDescription,
-      footer: { text: "يتم الترتيب تلقائياً حسب الأكثر نشاطاً" }
+      footer: { text: "يتم الترتيب والتقييم تلقائياً" }
     };
 
     if (data.mainEmbedId) {
@@ -170,37 +198,45 @@ client.on(Events.MessageCreate, async message => {
   const db = loadDB();
   const userId = message.author.id;
 
-  // 1. الأوامر اليدوية للإحصائيات (+متدرب، +نشاط، إلخ)
   if (message.content.startsWith("+")) {
     const member = await message.guild.members.fetch(userId);
     if (!member.roles.cache.has(CONFIG.ADMIN_ROLE_ID)) return;
 
     const args = message.content.split(/\s+/);
     const command = args[0];
-    const amount = parseInt(args[1]) || 1;
+    const amount = parseInt(args[2]) || 1; 
+    const target = message.mentions.members.first();
 
     if (command === "+متدرب") {
-      for(let i=0; i<amount; i++) db.stats.trainees.push(`m_${Date.now()}_${i}`);
-      message.reply(`✅ تمت إضافة ${amount} متدرب.`);
+      const num = parseInt(args[1]) || 1;
+      for(let i=0; i<num; i++) db.stats.trainees.push(`m_${Date.now()}_${i}`);
+      message.reply(`✅ تمت إضافة ${num} متدرب.`);
     } 
-    else if (command === "+نشاط") {
-      db.stats.activities += amount;
-      message.reply(`✅ تمت إضافة ${amount} نشاط.`);
+    else if (command === "+كورس") {
+      if (!target) return message.reply("❌ يرجى منشن الشخص. مثال: `+كورس @user 1` ");
+      if (!db.stats.people[target.id]) db.stats.people[target.id] = { name: target.displayName, courses: 0, events: 0 };
+      db.stats.people[target.id].courses += amount;
+      message.reply(`✅ تمت إضافة ${amount} كورس لـ ${target.displayName}`);
     } 
+    else if (command === "+فعالية") {
+      if (!target) return message.reply("❌ يرجى منشن الشخص. مثال: `+فعالية @user 1` ");
+      if (!db.stats.people[target.id]) db.stats.people[target.id] = { name: target.displayName, courses: 0, events: 0 };
+      db.stats.people[target.id].events += amount;
+      message.reply(`✅ تمت إضافة ${amount} فعالية لـ ${target.displayName}`);
+    }
     else if (command === "+مخالفة") {
-      db.stats.violations += amount;
-      message.reply(`✅ تمت إضافة ${amount} مخالفة.`);
+      db.stats.violations += (parseInt(args[1]) || 1);
+      message.reply(`✅ تمت إضافة المخالفة.`);
     } 
     else if (command === "+ترقية") {
-      db.stats.promoted += amount;
-      message.reply(`✅ تمت إضافة ${amount} ترقية.`);
+      db.stats.promoted += (parseInt(args[1]) || 1);
+      message.reply(`✅ تمت إضافة الترقية.`);
     }
     saveDB(db);
     updateStatsEmbeds();
     return;
   }
 
-  // 2. نظام "مكمل"
   if (message.content.startsWith("مكمل")) {
     const member = await message.guild.members.fetch(userId);
     if (!member.roles.cache.has(CONFIG.ADMIN_ROLE_ID)) return;
@@ -217,12 +253,10 @@ client.on(Events.MessageCreate, async message => {
     return;
   }
 
-  // 3. رصد الكورسات والفعاليات تلقائياً
   const isCourse = CONFIG.COURSE_ROOMS.includes(message.channelId) && message.attachments.size > 0;
   const isEvent = CONFIG.EVENT_ROOMS.includes(message.channelId);
 
   if (isCourse || isEvent) {
-    db.stats.activities++;
     if (!db.stats.people[userId]) db.stats.people[userId] = { name: message.member.displayName, courses: 0, events: 0 };
     if (isCourse) db.stats.people[userId].courses++;
     if (isEvent) db.stats.people[userId].events++;
@@ -255,7 +289,7 @@ client.on(Events.InteractionCreate, async i => {
   if (!i.isButton() || i.customId !== "reset_week") return;
   if (!i.member.roles.cache.has(CONFIG.ADMIN_ROLE_ID)) return;
   const db = loadDB();
-  db.stats = { trainees: [], activities: 0, violations: 0, promoted: 0, people: {}, mainEmbedId: db.stats.mainEmbedId, topEmbedId: db.stats.topEmbedId };
+  db.stats = { trainees: [], violations: 0, promoted: 0, people: {}, mainEmbedId: db.stats.mainEmbedId, topEmbedId: db.stats.topEmbedId };
   saveDB(db);
   await updateStatsEmbeds();
   i.reply({ content: "✅ تم تصفير إحصائيات الأسبوع بنجاح", ephemeral: true });

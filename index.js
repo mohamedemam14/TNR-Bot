@@ -25,12 +25,20 @@ const CONFIG = {
   COURSE_ROOMS: ["1435036258266124390"],
   EVENT_ROOMS: ["1435036088950460528"],
   
-  // غرف العمل الـ 12 للرصد التلقائي
+  // غرف العمل الـ 12 للرصد التلقائي للمهام
   ROOMS: [
     "1434330815990464674", "1434330427900039343", "1434521224272150619", 
     "1434330587480719484", "1434330953018249377", "1434330690928906280",
     "1434514759436472451", "1434514060937924729", "1434516019661242408", 
     "1434514183461929021", "1434514841204162650", "1434514293830717530"
+  ],
+
+  // غرف المخالفات والإرشاد الـ 4 المحددة لزيادة الإحصائية
+  VIOLATION_ROOMS: [
+    "1434514759436472451", 
+    "1434516019661242408", 
+    "1434330815990464674", 
+    "1434521224272150619"
   ],
 
   LINE_LINK: "https://cdn.discordapp.com/attachments/1449506416065908816/1454546137439801354/1571650a7c706000-1.gif",
@@ -166,7 +174,6 @@ async function updateStatsEmbeds() {
       .setDescription(listDesc)
       .setFooter({ text: "يتم الترتيب والتقييم تلقائياً" });
 
-    // إرسال أو تعديل الرسائل
     if (data.mainEmbedId) {
       const msg = await channel.messages.fetch(data.mainEmbedId).catch(() => null);
       if (msg) await msg.edit({ embeds: [mainEmbed] });
@@ -188,16 +195,26 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
   if (user.bot || reaction.emoji.name !== "✅") return;
   if (reaction.partial) await reaction.fetch();
   
+  const member = await reaction.message.guild.members.fetch(user.id).catch(() => null);
+  if (!member || !member.roles.cache.has(CONFIG.ADMIN_ROLE_ID)) return;
+
+  // 1. الرصد في رومات العمل الـ 12 (للمهام)
   if (CONFIG.ROOMS.includes(reaction.message.channelId)) {
-    const member = await reaction.message.guild.members.fetch(user.id);
-    if (member.roles.cache.has(CONFIG.ADMIN_ROLE_ID)) {
-      const traineeId = reaction.message.author.id;
-      const traineeMember = await reaction.message.guild.members.fetch(traineeId).catch(() => null);
-      if (!traineeMember) return;
+    const traineeId = reaction.message.author.id;
+    const traineeMember = await reaction.message.guild.members.fetch(traineeId).catch(() => null);
+    if (traineeMember) {
       const rank = traineeMember.roles.cache.has(CONFIG.RANK_2_ROLE_ID) ? 3 : 2;
       const taskName = TASKS_MAP[reaction.message.channelId];
       if (taskName) await completeTask(traineeId, rank, taskName);
     }
+  }
+
+  // 2. الرصد في الرومات الـ 4 المحددة (لزيادة عداد المخالفات والإرشاد)
+  if (CONFIG.VIOLATION_ROOMS.includes(reaction.message.channelId)) {
+    const db = loadDB();
+    db.stats.violations += 1; // تزداد في كل مرة يتم وضع ريأكشن ✅ من إداري
+    saveDB(db);
+    updateStatsEmbeds();
   }
 });
 
@@ -262,6 +279,7 @@ client.on(Events.MessageCreate, async message => {
   }
 
   // 4. الرصد التلقائي (الكورسات والفعاليات)
+  const userId = message.author.id;
   const isCourse = CONFIG.COURSE_ROOMS.includes(message.channelId) && message.attachments.size > 0;
   const isEvent = CONFIG.EVENT_ROOMS.includes(message.channelId);
   if (isCourse || isEvent) {

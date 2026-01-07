@@ -5,7 +5,8 @@ import {
   Events, 
   ActionRowBuilder, 
   ButtonBuilder, 
-  ButtonStyle 
+  ButtonStyle,
+  EmbedBuilder 
 } from "discord.js";
 import fs from "fs";
 import express from "express";
@@ -72,8 +73,8 @@ async function updateStatsEmbeds() {
     const channel = await client.channels.fetch(CONFIG.STATS_CHANNEL_ID).catch(() => null);
     if (!channel) return;
 
-    const totalCourses = Object.values(data.people).reduce((sum, p) => sum + (p.courses || 0), 0);
-    const totalEvents = Object.values(data.people).reduce((sum, p) => sum + (p.events || 0), 0);
+    // حساب مجموع الأنشطة الكلي (كورسات + فعاليات)
+    const totalActivities = Object.values(data.people).reduce((sum, p) => sum + (p.courses || 0) + (p.events || 0), 0);
 
     const mainEmbed = {
       title: "📊 إحصائيات المتابعة الأسبوعية",
@@ -81,9 +82,8 @@ async function updateStatsEmbeds() {
       color: 0x5865f2,
       fields: [
         { name: "👥 متدربين جدد", value: `\`\`\`res\n${data.trainees.length}\`\`\``, inline: true },
-        { name: "📚 الكورسات", value: `\`\`\`res\n${totalCourses}\`\`\``, inline: true },
-        { name: "🎯 الفعاليات", value: `\`\`\`res\n${totalEvents}\`\`\``, inline: true },
-        { name: "🚫 مخالفات وإرشاد", value: `\`\`\`res\n${data.violations}\`\`\``, inline: true },
+        { name: "📚 الكورسات والفعاليات", value: `\`\`\`res\n${totalActivities}\`\`\``, inline: true },
+        { name: "🚫 مخالفات إجمالية", value: `\`\`\`res\n${data.violations}\`\`\``, inline: true },
         { name: "⬆️ ترقيات", value: `\`\`\`res\n${data.promoted}\`\`\``, inline: true }
       ],
       image: { url: CONFIG.LINE_LINK },
@@ -96,8 +96,8 @@ async function updateStatsEmbeds() {
     );
 
     const sortedIds = Object.keys(data.people).sort((a, b) => {
-      const totalA = data.people[a].courses + data.people[a].events;
-      const totalB = data.people[b].courses + data.people[b].events;
+      const totalA = (data.people[a].courses || 0) + (data.people[a].events || 0);
+      const totalB = (data.people[b].courses || 0) + (data.people[b].events || 0);
       return totalB - totalA;
     });
 
@@ -108,7 +108,7 @@ async function updateStatsEmbeds() {
 
       listDescription += sortedIds.slice(0, 15).map((id, i) => {
         const p = data.people[id];
-        const total = p.courses + p.events;
+        const total = (p.courses || 0) + (p.events || 0);
         let rating = "";
         
         if (total >= 10) rating = "💎 ممتاز";
@@ -198,13 +198,32 @@ client.on(Events.MessageCreate, async message => {
   const db = loadDB();
   const userId = message.author.id;
 
+  // 1. أمر الهيلب (Help)
+  if (message.content === "+help") {
+    const helpEmbed = new EmbedBuilder()
+      .setTitle("📖 قائمة أوامر التحكم في البوت")
+      .setColor(0x00ffcc)
+      .setDescription("هذه الأوامر مخصصة للإدارة فقط لإدارة الإحصائيات والمهام:")
+      .addFields(
+        { name: "➕ إحصائيات عامة", value: "`+متدرب [العدد]`\n`+مخالفة [العدد]`\n`+ترقية [العدد]`", inline: true },
+        { name: "⭐ نشاط الأعضاء", value: "`+كورس @user [العدد]`\n`+فعالية @user [العدد]`", inline: true },
+        { name: "✅ نظام المهام", value: "`مكمل @user [الرتبة]`\n`مكمل @user [اسم المهمة] [الرتبة]`", inline: false },
+        { name: "📊 التقييمات", value: "من 1-2: ضعيف\nمن 3-5: جيد\nمن 6-9: جيد جداً\n10 فما فوق: ممتاز", inline: false }
+      )
+      .setImage(CONFIG.LINE_LINK)
+      .setFooter({ text: "TNR System Help Center" });
+
+    return message.reply({ embeds: [helpEmbed] });
+  }
+
+  // 2. الأوامر اليدوية
   if (message.content.startsWith("+")) {
     const member = await message.guild.members.fetch(userId);
     if (!member.roles.cache.has(CONFIG.ADMIN_ROLE_ID)) return;
 
     const args = message.content.split(/\s+/);
     const command = args[0];
-    const amount = parseInt(args[2]) || 1; 
+    const amount = parseInt(args[2]) || (parseInt(args[1]) || 1); 
     const target = message.mentions.members.first();
 
     if (command === "+متدرب") {

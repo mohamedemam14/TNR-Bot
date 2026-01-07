@@ -19,7 +19,6 @@ const CONFIG = {
   FOLLOW_CHANNEL_ID: "1435287030484697128",
   FINAL_UPGRADE_CHANNEL_ID: "1457888039673270515",
   
-  // رتب المتدربين للحساب التلقائي
   RANK_1_ROLE_ID: "1434311654664962240", 
   RANK_2_ROLE_ID: "1434316046847709356", 
 
@@ -32,18 +31,6 @@ const CONFIG = {
 
   LINE_LINK: "https://cdn.discordapp.com/attachments/1449506416065908816/1454546137439801354/1571650a7c706000-1.gif",
   DB_FILE: "./data/database.json"
-};
-
-const TASKS_RANK_2 = {
-  "1434330815990464674": "الإرشاد", "1434330427900039343": "الاستقبال",
-  "1434521224272150619": "المخالفات", "1434330587480719484": "الفعاليات",
-  "1434330953018249377": "الإعلام", "1434330690928906280": "CPR"
-};
-
-const TASKS_RANK_3 = {
-  "1434514759436472451": "الإرشاد", "1434514060937924729": "الاستقبال",
-  "1434516019661242408": "المخالفات", "1434514183461929021": "الفعاليات",
-  "1434514841204162650": "الإعلام", "1434514293830717530": "CPR"
 };
 
 /* ================== البوت والسيرفر ================== */
@@ -120,25 +107,14 @@ async function updateStatsEmbeds() {
       listDescription += sortedIds.slice(0, 15).map((id, i) => {
         const p = data.people[id];
         const total = (p.courses || 0) + (p.events || 0);
-        let rating = "";
-        
-        if (total >= 10) rating = "💎 ممتاز";
-        else if (total >= 6) rating = "✅ جيد جداً";
-        else if (total >= 3) rating = "⚠️ جيد";
-        else rating = "❌ ضعيف";
-
+        let rating = total >= 10 ? "💎 ممتاز" : total >= 6 ? "✅ جيد جداً" : total >= 3 ? "⚠️ جيد" : "❌ ضعيف";
         return `**${i + 1}. ${p.name}**\n📚 كورسات: ${p.courses} | 🎯 فعاليات: ${p.events}\nالتقييم: \`${rating}\``;
       }).join("\n\n");
     } else {
       listDescription = "لا يوجد بيانات نشاط حالياً";
     }
 
-    const topEmbed = { 
-      title: "🏆 قائمة النشاط والتميز", 
-      color: 0xf1c40f, 
-      description: listDescription,
-      footer: { text: "يتم الترتيب والتقييم تلقائياً" }
-    };
+    const topEmbed = { title: "🏆 قائمة النشاط والتميز", color: 0xf1c40f, description: listDescription, footer: { text: "يتم الترتيب والتقييم تلقائياً" } };
 
     if (data.mainEmbedId) {
       const msg = await channel.messages.fetch(data.mainEmbedId).catch(() => null);
@@ -159,99 +135,71 @@ async function updateStatsEmbeds() {
 
 /* ================== الأحداث (Events) ================== */
 client.on(Events.MessageCreate, async message => {
-  if (message.author.bot) {
-    if (message.channelId === CONFIG.FINAL_UPGRADE_CHANNEL_ID) {
-      const db = loadDB();
-      db.stats.promoted++;
-      saveDB(db);
-      updateStatsEmbeds();
-    }
-    return;
-  }
+  if (message.author.bot) return;
 
   const db = loadDB();
   const userId = message.author.id;
 
-  // أمر الهيلب (Help) مع التصفير
+  // أمر الهيلب (Help)
   if (message.content === "+help") {
     const helpEmbed = new EmbedBuilder()
       .setTitle("📖 قائمة أوامر التحكم في البوت")
       .setColor(0x00ffcc)
-      .setDescription("الأوامر المخصصة للإدارة للتحكم في الإحصائيات:")
       .addFields(
         { name: "⭐ نشاط الأعضاء", value: "`+كورس @user [العدد]`\n`+فعالية @user [العدد]`", inline: true },
         { name: "➕ إحصائيات يدوية", value: "`+مخالفة [العدد]`\n`+ترقية [العدد]`", inline: true },
-        { name: "🧹 أوامر التصفير", value: "`+reset` (لتصفير إحصائيات الأسبوع)", inline: true },
-        { name: "✅ نظام المهام", value: "`مكمل @user [الرتبة]`\n`مكمل @user [اسم المهمة] [الرتبة]`", inline: false },
-        { name: "📊 التقييمات", value: "1-2: ضعيف | 3-5: جيد | 6-9: جيد جداً | 10+: ممتاز", inline: false }
+        { name: "🧹 أوامر التصفير", value: "`+reset` (لتصفير الإحصائيات)", inline: true }
       )
-      .setImage(CONFIG.LINE_LINK)
-      .setFooter({ text: "TNR System Help Center" });
-
+      .setImage(CONFIG.LINE_LINK);
     return message.reply({ embeds: [helpEmbed] });
   }
 
-  // الأوامر اليدوية
+  // الأوامر اليدوية (+)
   if (message.content.startsWith("+")) {
     const member = await message.guild.members.fetch(userId);
     if (!member.roles.cache.has(CONFIG.ADMIN_ROLE_ID)) return;
 
     const args = message.content.split(/\s+/);
     const command = args[0];
-    const amount = parseInt(args[2]) || (parseInt(args[1]) || 1); 
     const target = message.mentions.members.first();
+    
+    // استخراج العدد من الرسالة (يدعم +مخالفة 5 أو +كورس @user 5)
+    let amount = 1;
+    const potentialAmount = args.find(arg => !isNaN(arg) && arg.trim() !== "");
+    if (potentialAmount) amount = parseInt(potentialAmount);
 
-    // أمر التصفير اليدوي
     if (command === "+reset") {
-      db.stats = { 
-        violations: 0, 
-        promoted: 0, 
-        people: {}, 
-        mainEmbedId: db.stats.mainEmbedId, 
-        topEmbedId: db.stats.topEmbedId 
-      };
+      db.stats = { violations: 0, promoted: 0, people: {}, mainEmbedId: db.stats.mainEmbedId, topEmbedId: db.stats.topEmbedId };
       saveDB(db);
       await updateStatsEmbeds();
-      return message.reply("✅ تم تصفير كافة إحصائيات الأسبوع بنجاح.");
+      return message.reply("✅ تم تصفير إحصائيات الأسبوع.");
     }
 
-    if (command === "+كورس") {
-      if (!target) return message.reply("❌ يرجى منشن الشخص.");
+    if (command === "+كورس" && target) {
       if (!db.stats.people[target.id]) db.stats.people[target.id] = { name: target.displayName, courses: 0, events: 0 };
       db.stats.people[target.id].courses += amount;
       message.reply(`✅ تمت إضافة ${amount} كورس لـ ${target.displayName}`);
     } 
-    else if (command === "+فعالية") {
-      if (!target) return message.reply("❌ يرجى منشن الشخص.");
+    else if (command === "+فعالية" && target) {
       if (!db.stats.people[target.id]) db.stats.people[target.id] = { name: target.displayName, courses: 0, events: 0 };
       db.stats.people[target.id].events += amount;
       message.reply(`✅ تمت إضافة ${amount} فعالية لـ ${target.displayName}`);
     }
     else if (command === "+مخالفة") {
       db.stats.violations += amount;
-      message.reply(`✅ تمت إضافة المخالفة.`);
+      message.reply(`✅ تمت إضافة ${amount} مخالفة.`);
     } 
     else if (command === "+ترقية") {
       db.stats.promoted += amount;
-      message.reply(`✅ تمت إضافة الترقية.`);
+      message.reply(`✅ تمت إضافة ${amount} ترقية.`);
     }
+
     saveDB(db);
     updateStatsEmbeds();
     return;
   }
 
-  // نظام "مكمل"
-  if (message.content.startsWith("مكمل")) {
-    const member = await message.guild.members.fetch(userId);
-    if (!member.roles.cache.has(CONFIG.ADMIN_ROLE_ID)) return;
-    const args = message.content.split(/\s+/);
-    const trainee = message.mentions.members.first();
-    const rank = parseInt(args[args.length - 1]);
-    if (!trainee || ![2, 3].includes(rank)) return;
-    // تم إضافة الكود الخاص بـ completeTask هنا كما في النسخ السابقة
-  }
-
-  // رصد الكورسات والفعاليات تلقائياً
+  // الحساب التلقائي من الرومات
   const isCourse = CONFIG.COURSE_ROOMS.includes(message.channelId) && message.attachments.size > 0;
   const isEvent = CONFIG.EVENT_ROOMS.includes(message.channelId);
 
@@ -265,7 +213,7 @@ client.on(Events.MessageCreate, async message => {
 });
 
 client.once(Events.ClientReady, () => {
-  console.log(`🚀 TNR System Integrated: ${client.user.tag}`);
+  console.log(`🚀 System Ready: ${client.user.tag}`);
   updateStatsEmbeds();
 });
 

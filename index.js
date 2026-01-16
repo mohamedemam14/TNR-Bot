@@ -10,19 +10,19 @@ const client = new Client({
     ] 
 });
 
-// --- الإعدادات (تأكد من وضع الـ IDs في ملف .env) ---
+// --- الإعدادات (تأكد من مطابقة الأسماء في ملف .env) ---
 const TOKEN = process.env.DISCORD_TOKEN; 
 const CHANNELS = {
-    ATTENDANCE: process.env.CHANNEL_ATTENDANCE, // روم الأزرار
-    LOGS: process.env.CHANNEL_LOGS,             // روم السجل (نصوص)
-    STATS: process.env.CHANNEL_STATS            // روم إحصائيات الساعات
+    ATTENDANCE: process.env.CHANNEL_ATTENDANCE, 
+    LOGS: process.env.CHANNEL_LOGS,             
+    STATS: process.env.CHANNEL_STATS            
 };
 
-const DATA_FILE = './reception_db.json';
+const DATA_FILE = './hospital_data.json';
 
 let db = {
-    activeSessions: {}, // الجلسات الحالية
-    weeklyStats: {},    // مجموع الساعات التراكمي
+    activeSessions: {}, 
+    weeklyStats: {},    
     statsMessageId: null
 };
 
@@ -35,29 +35,29 @@ if (fs.existsSync(DATA_FILE)) {
 
 function save() { fs.writeFileSync(DATA_FILE, JSON.stringify(db, null, 2)); }
 
-// دالة لتحديث رسالة الإحصائيات
+// دالة تحديث روم الإحصائيات
 async function updateStatsEmbed(guild) {
     try {
         const statsChan = await client.channels.fetch(CHANNELS.STATS);
         if (!statsChan) return;
 
-        let description = "📊 **إحصائيات ساعات عمل موظفي الاستقبال:**\n\n";
+        let desc = "📊 **إحصائيات ساعات موظفي الاستقبال (أسبوعي):**\n\n";
         const entries = Object.entries(db.weeklyStats);
 
         if (entries.length === 0) {
-            description += "لا توجد بيانات مسجلة لهذا الأسبوع.";
+            desc += "لا توجد بيانات مسجلة حالياً.";
         } else {
             for (const [userId, minutes] of entries) {
                 const hours = (minutes / 60).toFixed(2);
-                description += `• <@${userId}>: \`${hours}\` ساعة\n`;
+                desc += `• <@${userId}> : \`${hours}\` ساعة\n`;
             }
         }
 
         const embed = new EmbedBuilder()
-            .setTitle("📅 الحصاد الأسبوعي للساعات")
-            .setDescription(description)
+            .setTitle("📅 مجموع الساعات التراكمي")
+            .setDescription(desc)
             .setColor("#3BA55C")
-            .setTimestamp();
+            .setFooter({ text: "يتم التحديث تلقائياً عند تسجيل الخروج" });
 
         if (db.statsMessageId) {
             const msg = await statsChan.messages.fetch(db.statsMessageId).catch(() => null);
@@ -70,7 +70,7 @@ async function updateStatsEmbed(guild) {
     } catch (err) { console.error("Stats update failed:", err); }
 }
 
-client.once('ready', () => console.log(`✅ ${client.user.tag} جاهز للعمل`));
+client.once('ready', () => console.log(`✅ ${client.user.tag} جاهز`));
 
 client.on('interactionCreate', async interaction => {
     if (!interaction.isButton()) return;
@@ -82,8 +82,9 @@ client.on('interactionCreate', async interaction => {
             return interaction.reply({ content: "⚠️ أنت مسجل دخول بالفعل!", ephemeral: true });
         }
 
-        // إرسال السجل (وقت فقط :t)
-        const logMsg = await logChannel.send(`📥 **دخول استقبل:** ${user} | الوقت: <t:${Math.floor(Date.now() / 1000)}:t> | 🟢 في العمل`);
+        // إرسال السجل بالتنسيق المطلوب (وقت فقط)
+        const logContent = `**\nشفت الاستقبال : ${user}\n🟢 تسجيل الدخول : <t:${Math.floor(Date.now() / 1000)}:t>\n🔴 تسجيل الخروج : --:--\nالوقت : جاري العمل...\n**`;
+        const logMsg = await logChannel.send(logContent);
 
         db.activeSessions[user.id] = {
             logMessageId: logMsg.id,
@@ -91,52 +92,57 @@ client.on('interactionCreate', async interaction => {
         };
         save();
 
-        return interaction.reply({ content: "✅ تم تسجيل دخولك.", ephemeral: true });
+        return interaction.reply({ content: "✅ تم تسجيل دخولك بنجاح.", ephemeral: true });
     }
 
     if (customId === 'check_out') {
         if (!db.activeSessions[user.id]) {
-            return interaction.reply({ content: "⚠️ لم تقم بتسجيل الدخول!", ephemeral: true });
+            return interaction.reply({ content: "⚠️ لم تسجل دخولك بعد!", ephemeral: true });
         }
 
         const session = db.activeSessions[user.id];
-        const durationMins = (Date.now() - session.startTime) / 60000;
+        const endTime = Date.now();
+        const durationMs = endTime - session.startTime;
+        const durationMins = durationMs / 60000;
 
-        // تحديث الإحصائيات الأسبوعية
+        // حساب الساعات والدقائق للمدة المقضاة
+        const h = Math.floor(durationMins / 60);
+        const m = Math.floor(durationMins % 60);
+
+        // تحديث الإحصائيات
         db.weeklyStats[user.id] = (db.weeklyStats[user.id] || 0) + durationMins;
 
         try {
-            // تعديل رسالة السجل (وقت فقط :t)
             const oldMsg = await logChannel.messages.fetch(session.logMessageId);
-            await oldMsg.edit(`📤 **خروج استقبال:** ${user} | الوقت: <t:${Math.floor(Date.now() / 1000)}:t> | 🔴 انتهى (المدة: \`${durationMins.toFixed(0)}\` دقيقة)`);
-        } catch (e) {}
+            const updatedContent = `**\nشفت الاستقبال : ${user}\n🟢 تسجيل الدخول : <t:${Math.floor(session.startTime / 1000)}:t>\n🔴 تسجيل الخروج : <t:${Math.floor(endTime / 1000)}:t>\nالوقت : ${h} ساعة و ${m} دقيقة\n**`;
+            await oldMsg.edit(updatedContent);
+        } catch (e) { console.error("Log edit failed"); }
 
         delete db.activeSessions[user.id];
         save();
 
         await updateStatsEmbed(guild);
-        return interaction.reply({ content: "✅ تم تسجيل خروجك وتحديث ساعاتك.", ephemeral: true });
+        return interaction.reply({ content: `✅ تم تسجيل الخروج. المدة: ${h}س و ${m}د`, ephemeral: true });
     }
 });
 
 client.on('messageCreate', async message => {
     if (message.content === '!setup' && message.member.permissions.has('Administrator')) {
-        // لوحة التحكم
-        const attendChan = await client.channels.fetch(CHANNELS.ATTENDANCE);
-        const row = new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId('check_in').setLabel('تسجيل دخول').setStyle(ButtonStyle.Success),
-            new ButtonBuilder().setCustomId('check_out').setLabel('تسجيل خروج').setStyle(ButtonStyle.Danger)
-        );
+        try {
+            const attendChan = await client.channels.fetch(CHANNELS.ATTENDANCE);
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId('check_in').setLabel('تسجيل دخول').setStyle(ButtonStyle.Success),
+                new ButtonBuilder().setCustomId('check_out').setLabel('تسجيل خروج').setStyle(ButtonStyle.Danger)
+            );
 
-        await attendChan.send({ 
-            embeds: [new EmbedBuilder().setTitle("🚪 نظام حضور الاستقبال").setDescription("يرجى تسجيل الدخول عند بدء الشفت والخروج عند انتهائه.").setColor("Blue")], 
-            components: [row] 
-        });
+            await attendChan.send({ 
+                embeds: [new EmbedBuilder().setTitle("🏥 نظام حضور الاستقبال").setDescription("اضغط على الأزرار أدناه لتسجيل شفتك").setColor("Blue")], 
+                components: [row] 
+            });
 
-        // إرسال رسالة الإحصائيات لأول مرة
-        await updateStatsEmbed(message.guild);
-        
-        message.reply("✅ تم إعداد النظام بالكامل (اللوحة، السجل، والإحصائيات).");
+            await updateStatsEmbed(message.guild);
+            message.reply("✅ تم الإعداد بنجاح.");
+        } catch (err) { message.reply("❌ حدث خطأ، تأكد من الـ IDs في ملف الـ env"); }
     }
 });
 

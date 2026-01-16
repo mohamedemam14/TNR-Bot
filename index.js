@@ -1,293 +1,172 @@
-import { 
-  Client, 
-  GatewayIntentBits, 
-  Partials, 
-  Events, 
-  EmbedBuilder 
-} from "discord.js";
-import fs from "fs";
-import express from "express";
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder } = require('discord.js');
+const fs = require('fs');
 
-/* ================== الإعدادات (CONFIG) ================== */
-const CONFIG = {
-  TOKEN: process.env.TOKEN,
-  ADMIN_ROLE_ID: "1457403586005831872",
-  STATS_CHANNEL_ID: "1458097832232882308",
-  FOLLOW_CHANNEL_ID: "1435287030484697128",
-  FINAL_UPGRADE_CHANNEL_ID: "1457888039673270515",
-  
-  RANK_1_ROLE_ID: "1434311654664962240", 
-  RANK_2_ROLE_ID: "1434316046847709356", 
+const client = new Client({ 
+    intents: [
+        GatewayIntentBits.Guilds, 
+        GatewayIntentBits.GuildMessages, 
+        GatewayIntentBits.MessageContent,
+        GatewayIntentBits.GuildMembers
+    ] 
+});
 
-  RESULT_RANK_2: "1434522529506267308",
-  RESULT_RANK_3: "1434519158426435678",
-
-  COURSE_ROOMS: ["1435036258266124390"],
-  EVENT_ROOMS: ["1435036088950460528"],
-  
-  // غرف العمل الـ 12 للرصد التلقائي للمهام
-  ROOMS: [
-    "1434330815990464674", "1434330427900039343", "1434521224272150619", 
-    "1434330587480719484", "1434330953018249377", "1434330690928906280",
-    "1434514759436472451", "1434514060937924729", "1434516019661242408", 
-    "1434514183461929021", "1434514841204162650", "1434514293830717530"
-  ],
-
-  // غرف المخالفات والإرشاد الـ 4 المحددة لزيادة الإحصائية
-  VIOLATION_ROOMS: [
-    "1434514759436472451", 
-    "1434516019661242408", 
-    "1434330815990464674", 
-    "1434521224272150619"
-  ],
-
-  LINE_LINK: "https://cdn.discordapp.com/attachments/1449506416065908816/1454546137439801354/1571650a7c706000-1.gif",
-  DB_FILE: "./data/database.json"
+// --- إعدادات الأيديهات (ضع الأيديهات الخاصة بك هنا) ---
+const TOKEN = "YOUR_BOT_TOKEN_HERE"; // توكن البوت
+const CHANNELS = {
+    SCHEDULE: "1234567890",   // روم الجدول
+    STATS: "1234567890",      // روم إحصائيات الساعات
+    ATTENDANCE: "1234567890"  // روم تسجيل الدخول والخروج
 };
 
-const TASKS_MAP = {
-  "1434330815990464674": "الإرشاد", "1434330427900039343": "الاستقبال",
-  "1434521224272150619": "المخالفات", "1434330587480719484": "الفعاليات",
-  "1434330953018249377": "الإعلام", "1434330690928906280": "CPR",
-  "1434514759436472451": "الإرشاد", "1434514060937924729": "الاستقبال",
-  "1434516019661242408": "المخالفات", "1434514183461929021": "الفعاليات",
-  "1434514841204162650": "الإعلام", "1434514293830717530": "CPR"
+const DATA_FILE = './hospital_data.json';
+
+// تحميل أو إنشاء قاعدة البيانات
+let db = {
+    schedule: {},
+    stats: {},
+    config: { statsMessageId: null }
 };
 
-const TASKS_RANK_LIST = ["الإرشاد", "الاستقبال", "المخالفات", "الفعاليات", "الإعلام", "CPR"];
-
-/* ================== البوت والسيرفر ================== */
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds, 
-    GatewayIntentBits.GuildMessages, 
-    GatewayIntentBits.MessageContent, 
-    GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildMessageReactions
-  ],
-  partials: [Partials.Message, Partials.Channel, Partials.Reaction]
-});
-
-const app = express();
-app.get("/", (req, res) => res.send("✅ System is Running"));
-app.listen(process.env.PORT || 8080);
-
-/* ================== إدارة البيانات ================== */
-if (!fs.existsSync("./data")) fs.mkdirSync("./data");
-function loadDB() {
-  if (!fs.existsSync(CONFIG.DB_FILE)) {
-    fs.writeFileSync(CONFIG.DB_FILE, JSON.stringify({ progress: {}, stats: { violations: 0, promoted: 0, people: {}, mainEmbedId: null, topEmbedId: null } }));
-  }
-  return JSON.parse(fs.readFileSync(CONFIG.DB_FILE, "utf8"));
-}
-function saveDB(data) { fs.writeFileSync(CONFIG.DB_FILE, JSON.stringify(data, null, 2)); }
-
-/* ================== نظام المهام (مكمل) ================== */
-async function completeTask(traineeId, rank, taskName) {
-  const db = loadDB();
-  const key = `${traineeId}_${rank}`;
-  if (!db.progress[key]) db.progress[key] = { tasks: [], followMessageId: null, resultSent: false };
-
-  const data = db.progress[key];
-  if (taskName === "الكل") {
-    data.tasks = [...TASKS_RANK_LIST];
-  } else if (taskName && TASKS_RANK_LIST.includes(taskName) && !data.tasks.includes(taskName)) {
-    data.tasks.push(taskName);
-  } else { return; }
-
-  let listString = TASKS_RANK_LIST.map(t => `${data.tasks.includes(t) ? "✅" : "❌"} ${t}`).join("\n");
-  const content = `📋 **متابعة مهام رتبة ${rank}**\n━━━━━━━━━━━━━━\n👤 المتدرب: <@${traineeId}>\n\n📝 المهام:\n${listString}\n━━━━━━━━━━━━━━\n📊 التقدم: ${data.tasks.length} / ${TASKS_RANK_LIST.length}\n\n🔗 ${CONFIG.LINE_LINK}`;
-
-  const followChannel = await client.channels.fetch(CONFIG.FOLLOW_CHANNEL_ID).catch(() => null);
-  if (followChannel) {
-    if (data.followMessageId) {
-      const m = await followChannel.messages.fetch(data.followMessageId).catch(() => null);
-      if (m) await m.edit({ content });
-      else { const s = await followChannel.send({ content }); data.followMessageId = s.id; }
-    } else { const s = await followChannel.send({ content }); data.followMessageId = s.id; }
-  }
-
-  if (data.tasks.length === TASKS_RANK_LIST.length && !data.resultSent) {
-    data.resultSent = true;
-    const resChId = rank === 2 ? CONFIG.RESULT_RANK_2 : CONFIG.RESULT_RANK_3;
-    const resCh = await client.channels.fetch(resChId).catch(() => null);
-    if (resCh) await resCh.send(`🎉 **جاهز للترقية**\n👤 المتدرب: <@${traineeId}>\n🏅 الرتبة: ${rank}\n\n🔗 ${CONFIG.LINE_LINK}`);
-    
-    const finalCh = await client.channels.fetch(CONFIG.FINAL_UPGRADE_CHANNEL_ID).catch(() => null);
-    if (finalCh) await finalCh.send(`**\n- إسم المتدرب : <@${traineeId}>\n- الرتبة الحالية : ${rank}\n\n- جاهز للترقية : ✅\n**`);
-    db.stats.promoted++;
-  }
-  saveDB(db);
-  updateStatsEmbeds();
+if (fs.existsSync(DATA_FILE)) {
+    db = JSON.parse(fs.readFileSync(DATA_FILE));
 }
 
-/* ================== تحديث الإحصائيات (الإمبدات) ================== */
-async function updateStatsEmbeds() {
-  try {
-    const db = loadDB();
-    const data = db.stats;
-    const channel = await client.channels.fetch(CONFIG.STATS_CHANNEL_ID).catch(() => null);
-    if (!channel) return;
+// مصفوفة الساعات الـ 24
+const hours = [
+    "12:00ص – 1:00ص", "1:00ص – 2:00ص", "2:00ص – 3:00ص", "3:00ص – 4:00ص",
+    "4:00ص – 5:00ص", "5:00ص – 6:00ص", "6:00ص – 7:00ص", "7:00ص – 8:00ص",
+    "8:00ص – 9:00ص", "9:00ص – 10:00ص", "10:00ص – 11:00ص", "11:00ص – 12:00م",
+    "12:00م – 1:00م", "1:00م – 2:00م", "2:00م – 3:00م", "3:00م – 4:00م",
+    "4:00م – 5:00م", "5:00م – 6:00م", "6:00م – 7:00م", "7:00م – 8:00م",
+    "8:00م – 9:00م", "9:00م – 10:00م", "10:00م – 11:00م", "11:00م – 12:00ص"
+];
 
-    const guild = channel.guild;
-    const members = await guild.members.fetch(); 
-    const traineesCount = members.filter(m => m.roles.cache.has(CONFIG.RANK_1_ROLE_ID) || m.roles.cache.has(CONFIG.RANK_2_ROLE_ID)).size;
-
-    const totalCourses = Object.values(data.people).reduce((sum, p) => sum + (p.courses || 0), 0);
-    const totalEvents = Object.values(data.people).reduce((sum, p) => sum + (p.events || 0), 0);
-
-    // 1. الإمبد الأول (الإحصائيات)
-    const mainEmbed = new EmbedBuilder()
-      .setTitle("📊 إحصائيات المتابعة الأسبوعية")
-      .setColor(0x5865f2)
-      .addFields(
-        { name: "👥 متدربين حاليين", value: `\`\`\`res\n${traineesCount}\`\`\``, inline: true },
-        { name: "📚 إجمالي الكورسات", value: `\`\`\`res\n${totalCourses}\`\`\``, inline: true },
-        { name: "🎯 إجمالي الفعاليات", value: `\`\`\`res\n${totalEvents}\`\`\``, inline: true },
-        { name: "🚫 مخالفات وإرشاد", value: `\`\`\`res\n${data.violations}\`\`\``, inline: true },
-        { name: "⬆️ تمت ترقية", value: `\`\`\`res\n${data.promoted}\`\`\``, inline: true }
-      )
-      .setImage(CONFIG.LINE_LINK)
-      .setTimestamp();
-
-    // 2. الإمبد الثاني (التميز)
-    const sortedIds = Object.keys(data.people).sort((a, b) => {
-      const totalA = (data.people[a].courses || 0) + (data.people[a].events || 0);
-      const totalB = (data.people[b].courses || 0) + (data.people[b].events || 0);
-      return totalB - totalA;
-    });
-
-    let listDesc = "لا يوجد بيانات نشاط حالياً";
-    if (sortedIds.length > 0) {
-      listDesc = `🌟 **نجم الأسبوع:** <@${sortedIds[0]}>\n━━━━━━━━━━━━━━\n`;
-      listDesc += sortedIds.slice(0, 15).map((id, i) => {
-        const p = data.people[id];
-        const total = (p.courses || 0) + (p.events || 0);
-        let rating = total >= 10 ? "💎 ممتاز" : total >= 6 ? "✅ جيد جداً" : total >= 3 ? "⚠️ جيد" : "❌ ضعيف";
-        return `**${i + 1}. ${p.name}**\n📚 كورسات: ${p.courses} | 🎯 فعاليات: ${p.events}\nالتقييم: \`${rating}\``;
-      }).join("\n\n");
-    }
-
-    const topEmbed = new EmbedBuilder()
-      .setTitle("🏆 قائمة النشاط والتميز")
-      .setColor(0xf1c40f)
-      .setDescription(listDesc)
-      .setFooter({ text: "يتم الترتيب والتقييم تلقائياً" });
-
-    if (data.mainEmbedId) {
-      const msg = await channel.messages.fetch(data.mainEmbedId).catch(() => null);
-      if (msg) await msg.edit({ embeds: [mainEmbed] });
-      else { const n = await channel.send({ embeds: [mainEmbed] }); data.mainEmbedId = n.id; }
-    } else { const n = await channel.send({ embeds: [mainEmbed] }); data.mainEmbedId = n.id; }
-
-    if (data.topEmbedId) {
-      const msg = await channel.messages.fetch(data.topEmbedId).catch(() => null);
-      if (msg) await msg.edit({ embeds: [topEmbed] });
-      else { const n = await channel.send({ embeds: [topEmbed] }); data.topEmbedId = n.id; }
-    } else { const n = await channel.send({ embeds: [topEmbed] }); data.topEmbedId = n.id; }
-
-    saveDB(db);
-  } catch (err) { console.error(err); }
+// تهيئة الجدول
+if (Object.keys(db.schedule).length === 0) {
+    hours.forEach(h => db.schedule[h] = { owner: null });
 }
 
-/* ================== رصد الريأكشن ✅ ================== */
-client.on(Events.MessageReactionAdd, async (reaction, user) => {
-  if (user.bot || reaction.emoji.name !== "✅") return;
-  if (reaction.partial) await reaction.fetch();
-  
-  const member = await reaction.message.guild.members.fetch(user.id).catch(() => null);
-  if (!member || !member.roles.cache.has(CONFIG.ADMIN_ROLE_ID)) return;
+function save() { fs.writeFileSync(DATA_FILE, JSON.stringify(db, null, 2)); }
 
-  // 1. الرصد في رومات العمل الـ 12 (للمهام)
-  if (CONFIG.ROOMS.includes(reaction.message.channelId)) {
-    const traineeId = reaction.message.author.id;
-    const traineeMember = await reaction.message.guild.members.fetch(traineeId).catch(() => null);
-    if (traineeMember) {
-      const rank = traineeMember.roles.cache.has(CONFIG.RANK_2_ROLE_ID) ? 3 : 2;
-      const taskName = TASKS_MAP[reaction.message.channelId];
-      if (taskName) await completeTask(traineeId, rank, taskName);
-    }
-  }
+// إنشاء إمبد الجدول
+function getScheduleEmbed() {
+    let desc = hours.map(h => `⏰ ${h} | ${db.schedule[h].owner ? `<@${db.schedule[h].owner}>` : "🔴 متاح للحجز"}`).join('\n');
+    return new EmbedBuilder().setTitle("📅 جدول الشيفتات الأسبوعي الثابت").setDescription(desc).setColor("#5865F2");
+}
 
-  // 2. الرصد في الرومات الـ 4 المحددة (لزيادة عداد المخالفات والإرشاد)
-  if (CONFIG.VIOLATION_ROOMS.includes(reaction.message.channelId)) {
-    const db = loadDB();
-    db.stats.violations += 1; // تزداد في كل مرة يتم وضع ريأكشن ✅ من إداري
-    saveDB(db);
-    updateStatsEmbeds();
-  }
+// إنشاء إمبد الإحصائيات
+function getStatsEmbed() {
+    let desc = Object.entries(db.stats)
+        .map(([id, data]) => `👤 <@${id}>: **${(data.totalMinutes / 60).toFixed(2)}** ساعة عمل`)
+        .join('\n') || "لا توجد بيانات مسجلة حالياً.";
+    return new EmbedBuilder().setTitle("📊 إحصائيات الساعات المنجزة").setDescription(desc).setColor("#3BA55C");
+}
+
+// تحديث رسالة الإحصائيات تلقائياً
+async function updateStatsMessage() {
+    try {
+        const channel = await client.channels.fetch(CHANNELS.STATS);
+        if (db.config.statsMessageId) {
+            const msg = await channel.messages.fetch(db.config.statsMessageId);
+            await msg.edit({ embeds: [getStatsEmbed()] });
+        }
+    } catch (e) { console.log("خطأ في تحديث الإحصائيات: " + e.message); }
+}
+
+client.once('ready', () => {
+    console.log(`✅ تم تشغيل البوت باسم: ${client.user.tag}`);
 });
 
-/* ================== الأوامر والرسائل ================== */
-client.on(Events.MessageCreate, async message => {
-  if (message.author.bot) return;
-  const db = loadDB();
+client.on('messageCreate', async message => {
+    if (message.content === '!setup' && message.member.permissions.has('Administrator')) {
+        
+        // 1. روم الجدول
+        const schedChan = client.channels.cache.get(CHANNELS.SCHEDULE);
+        const schedRow = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('btn_book').setLabel('حجز شيفت ثابت').setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId('btn_clear').setLabel('إلغاء حجزك').setStyle(ButtonStyle.Danger)
+        );
+        await schedChan.send({ embeds: [getScheduleEmbed()], components: [schedRow] });
 
-  // 1. أمر Help
-  if (message.content === "+help") {
-    const helpEmbed = new EmbedBuilder()
-      .setTitle("📖 قائمة أوامر التحكم")
-      .setColor(0x00ffcc)
-      .addFields(
-        { name: "⭐ نشاط", value: "`+كورس/كورسات @user [عدد]`\n`+فعالية @user [عدد]`", inline: true },
-        { name: "➕ إحصائيات يدوية", value: "`+مخالفة [عدد]`\n`+ترقية [عدد]`", inline: true },
-        { name: "✅ المهام", value: "`مكمل @user [الرتبة]`\n`مكمل @user [مهمة] [رتبة]`\nأو ريأكشن ✅ في الرومات", inline: false },
-        { name: "🧹 الإدارة", value: "`+reset` (تصفير الأسبوع)", inline: true }
-      ).setImage(CONFIG.LINE_LINK);
-    return message.reply({ embeds: [helpEmbed] });
-  }
+        // 2. روم الحضور
+        const attendChan = client.channels.cache.get(CHANNELS.ATTENDANCE);
+        const attendRow = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('check_in').setLabel('تسجيل دخول (بداية)').setStyle(ButtonStyle.Success),
+            new ButtonBuilder().setCustomId('check_out').setLabel('تسجيل خروج (نهاية)').setStyle(ButtonStyle.Secondary)
+        );
+        await attendChan.send({ 
+            embeds: [new EmbedBuilder().setTitle("⏱️ نظام تسجيل الوقت").setDescription("يرجى الضغط على الأزرار عند بدء وانهاء العمل.").setColor("Grey")],
+            components: [attendRow] 
+        });
 
-  // 2. أمر مكمل
-  if (message.content.startsWith("مكمل")) {
-    const member = await message.guild.members.fetch(message.author.id);
-    if (!member.roles.cache.has(CONFIG.ADMIN_ROLE_ID)) return;
-    const args = message.content.split(/\s+/);
-    const trainee = message.mentions.members.first();
-    const rank = parseInt(args[args.length - 1]);
-    if (!trainee || ![2, 3].includes(rank)) return;
+        // 3. روم الإحصائيات
+        const statsChan = client.channels.cache.get(CHANNELS.STATS);
+        const statsMsg = await statsChan.send({ embeds: [getStatsEmbed()] });
+        db.config.statsMessageId = statsMsg.id;
+        save();
 
-    let taskName = message.content.replace(/مكمل|<@!?\d+>|\d+/g, "").trim() || "الكل";
-    await completeTask(trainee.id, rank, taskName);
-    message.react("✅");
-  }
-
-  // 3. الأوامر اليدوية (+)
-  if (message.content.startsWith("+")) {
-    const member = await message.guild.members.fetch(message.author.id);
-    if (!member.roles.cache.has(CONFIG.ADMIN_ROLE_ID)) return;
-    const args = message.content.split(/\s+/);
-    const command = args[0];
-    const target = message.mentions.members.first();
-    const amount = parseInt(args.find(a => !isNaN(a) && a.length < 5)) || 1;
-
-    if (command === "+reset") {
-      db.stats = { violations: 0, promoted: 0, people: {}, mainEmbedId: db.stats.mainEmbedId, topEmbedId: db.stats.topEmbedId };
-      saveDB(db); await updateStatsEmbeds(); return message.reply("✅ تم تصفير الأسبوع.");
+        message.reply("✅ تم إرسال الأنظمة إلى الرومات المخصصة!");
     }
-    if ((command === "+كورس" || command === "+كورسات") && target) {
-        if (!db.stats.people[target.id]) db.stats.people[target.id] = { name: target.displayName, courses: 0, events: 0 };
-        db.stats.people[target.id].courses += amount;
-        message.reply(`✅ تم إضافة ${amount} كورس لـ ${target.displayName}`);
-    } else if (command === "+فعالية" && target) {
-        if (!db.stats.people[target.id]) db.stats.people[target.id] = { name: target.displayName, courses: 0, events: 0 };
-        db.stats.people[target.id].events += amount;
-        message.reply(`✅ تم إضافة ${amount} فعالية لـ ${target.displayName}`);
-    } else if (command === "+مخالفة") { db.stats.violations += amount; message.reply(`✅ تمت إضافة ${amount} مخالفة.`); }
-    else if (command === "+ترقية") { db.stats.promoted += amount; message.reply(`✅ تمت إضافة ${amount} ترقية.`); }
-
-    saveDB(db); updateStatsEmbeds();
-  }
-
-  // 4. الرصد التلقائي (الكورسات والفعاليات)
-  const userId = message.author.id;
-  const isCourse = CONFIG.COURSE_ROOMS.includes(message.channelId) && message.attachments.size > 0;
-  const isEvent = CONFIG.EVENT_ROOMS.includes(message.channelId);
-  if (isCourse || isEvent) {
-    if (!db.stats.people[userId]) db.stats.people[userId] = { name: message.member.displayName, courses: 0, events: 0 };
-    if (isCourse) db.stats.people[userId].courses++; if (isEvent) db.stats.people[userId].events++;
-    saveDB(db); updateStatsEmbeds();
-  }
 });
 
-client.once(Events.ClientReady, () => { console.log("🚀 System Online"); updateStatsEmbeds(); });
-client.login(CONFIG.TOKEN);
+client.on('interactionCreate', async interaction => {
+    const userId = interaction.user.id;
+
+    // منطق حجز شيفت
+    if (interaction.customId === 'btn_book') {
+        const options = hours.filter(h => !db.schedule[h].owner).map(h => ({ label: h, value: h }));
+        if (options.length === 0) return interaction.reply({ content: "الجدول ممتلئ!", ephemeral: true });
+        
+        const menu = new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder().setCustomId('menu_book').setPlaceholder('اختر الساعة المتاحة').addOptions(options)
+        );
+        await interaction.reply({ content: "اختر وقتك الثابت للأسبوع:", components: [menu], ephemeral: true });
+    }
+
+    if (interaction.customId === 'menu_book') {
+        const selected = interaction.values[0];
+        db.schedule[selected].owner = userId;
+        save();
+        await interaction.update({ content: `✅ تم حجزك لشيفت: ${selected}`, components: [] });
+        await interaction.message.edit({ embeds: [getScheduleEmbed()] });
+    }
+
+    // منطق إلغاء الحجز
+    if (interaction.customId === 'btn_clear') {
+        let count = 0;
+        for (let h in db.schedule) {
+            if (db.schedule[h].owner === userId) {
+                db.schedule[h].owner = null;
+                count++;
+            }
+        }
+        if (count === 0) return interaction.reply({ content: "ليس لديك شيفتات محجوزة!", ephemeral: true });
+        save();
+        await interaction.reply({ content: "✅ تم إلغاء جميع شيفتاتك.", ephemeral: true });
+        await interaction.message.edit({ embeds: [getScheduleEmbed()] });
+    }
+
+    // منطق الحضور والانصراف
+    if (interaction.customId === 'check_in') {
+        if (!db.stats[userId]) db.stats[userId] = { totalMinutes: 0, lastLogin: null };
+        if (db.stats[userId].lastLogin) return interaction.reply({ content: "أنت مسجل دخولك بالفعل!", ephemeral: true });
+        
+        db.stats[userId].lastLogin = Date.now();
+        save();
+        await interaction.reply({ content: "🛫 تم تسجيل دخولك. عمل ممتع!", ephemeral: true });
+    }
+
+    if (interaction.customId === 'check_out') {
+        if (!db.stats[userId] || !db.stats[userId].lastLogin) {
+            return interaction.reply({ content: "يجب تسجيل الدخول أولاً قبل الخروج!", ephemeral: true });
+        }
+        const diff = (Date.now() - db.stats[userId].lastLogin) / (1000 * 60); // بالدقائق
+        db.stats[userId].totalMinutes += diff;
+        db.stats[userId].lastLogin = null;
+        save();
+        await interaction.reply({ content: `🛬 تم تسجيل الخروج. الرصيد المضاف: **${diff.toFixed(1)}** دقيقة.`, ephemeral: true });
+        updateStatsMessage(); // تحديث روم الإحصائيات
+    }
+});
+
+client.login(TOKEN);

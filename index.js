@@ -10,7 +10,7 @@ const client = new Client({
     ] 
 });
 
-// --- الإعدادات ---
+// --- المتغيرات الأساسية ---
 const TOKEN = process.env.DISCORD_TOKEN; 
 const CHANNELS = {
     SCHEDULE: process.env.CHANNEL_SCHEDULE,   
@@ -18,7 +18,7 @@ const CHANNELS = {
     ATTENDANCE: process.env.CHANNEL_ATTENDANCE
 };
 
-const DATA_FILE = '/tmp/hospital_data.json';
+const DATA_FILE = '/tmp/hospital_db.json';
 
 let db = {
     schedule: {},
@@ -26,8 +26,12 @@ let db = {
     config: { statsMessageId: null, lastMentionId: {} }
 };
 
+// تحميل البيانات مع معالجة الأخطاء
 if (fs.existsSync(DATA_FILE)) {
-    try { db = JSON.parse(fs.readFileSync(DATA_FILE)); } catch (e) { console.error("Error loading DB"); }
+    try {
+        const rawData = fs.readFileSync(DATA_FILE);
+        db = JSON.parse(rawData);
+    } catch (e) { console.error("Database initialization error"); }
 }
 
 const hours = [
@@ -40,86 +44,85 @@ const hours = [
 ];
 
 const periods = [
-    { name: "🌙 الفترة الليلية",
-     range: [0, 5], color: "#1A1A1A" },
-    { name: "☀️ الفترة الصباحية",
-     range: [6, 11], color: "#FFAC33" },
-    { name: "🌤 الفترة المسائية",
-     range: [12, 17], color: "#55ACEE" },
-    { name: "🌆 المسائية المتأخرة",
-     range: [18, 23], color: "#3B88C3" }
+    { name: "🌙 الفترة الليلية", range: [0, 5] },
+    { name: "☀️ الفترة الصباحية", range: [6, 11] },
+    { name: "🌤 الفترة المسائية", range: [12, 17] },
+    { name: "🌆 المسائية المتأخرة", range: [18, 23] }
 ];
 
-if (Object.keys(db.schedule).length === 0) {
-    hours.forEach(h => db.schedule[h] = { owner: null });
-}
+// التأكد من وجود الساعات في الـ DB
+hours.forEach(h => { if (!db.schedule[h]) db.schedule[h] = { owner: null }; });
 
 function save() { fs.writeFileSync(DATA_FILE, JSON.stringify(db, null, 2)); }
 
-async function getDisplayName(userId, guild) {
-    if (!userId) return "🔴 متاح للحجز";
+// دالة جلب الاسم الصافي (بدون Dr)
+async function fetchName(userId, guild) {
+    if (!userId) return "______";
     try {
         const member = await guild.members.fetch(userId).catch(() => null);
-        return member ? member.displayName : "عضو غادر";
-    } catch { return "غير معروف"; }
+        return member ? member.displayName : "Unknown";
+    } catch { return "Unknown"; }
 }
 
-async function getScheduleEmbed(guild) {
-    let description = "👥 **جدول الشيفتات اليومية**\n";
-    description += "⏰ مدة كل شيفت: **ساعة واحدة**\n";
-    description += "━━━━━━━━━━━━━━━━━━\n";
+// دالة إنشاء إمبد الجدول الاحترافي
+async function createScheduleEmbed(guild) {
+    let desc = "👥 **جدول الشيفتات اليومية**\n";
+    desc += "⏰ مدة كل شيفت: **ساعة واحدة**\n";
+    desc += "━━━━━━━━━━━━━━━\n";
 
     for (const period of periods) {
-        description += `\n**${period.name}**\n`;
+        desc += `\n**${period.name}**\n`;
         for (let i = period.range[0]; i <= period.range[1]; i++) {
-            const hourLabel = hours[i];
-            const ownerId = db.schedule[hourLabel].owner;
-            const name = await getDisplayName(ownerId, guild);
-            const statusEmoji = ownerId ? "👤" : "🟢";
-            description += `> ${statusEmoji} \`${hourLabel}\` | **${name}**\n`;
+            const hour = hours[i];
+            const ownerId = db.schedule[hour].owner;
+            const name = await fetchName(ownerId, guild);
+            const emoji = ownerId ? "✅" : "⚪";
+            desc += `${emoji} \`${hour}\` | **${name}**\n`;
         }
     }
-
-    description += "\n━━━━━━━━━━━━━━━━━━\n";
-    description += "📌 *يتم تحديث الجدول تلقائياً عند كل حجز جديد*";
+    desc += "\n━━━━━━━━━━━━━━━\n📌 التحديث يتم تلقائياً فور الحجز.";
 
     return new EmbedBuilder()
-        .setAuthor({ name: "نظام إدارة الشيفتات", iconURL: guild.iconURL() })
-        .setDescription(description)
-        .setColor("#2F3136")
-        .setFooter({ text: "Hospital Management System" })
+        .setAuthor({ name: "إدارة تنظيم المواعيد", iconURL: guild.iconURL() })
+        .setDescription(desc)
+        .setColor("#2b2d31")
         .setTimestamp();
 }
 
-async function updateGlobalMessages(guild) {
+// تحديث الرسائل في القنوات
+async function forceUpdate(guild) {
+    save();
     try {
         const schedChan = await client.channels.fetch(CHANNELS.SCHEDULE);
-        const schedMsgs = await schedChan.messages.fetch({ limit: 20 });
-        const schedMsg = schedMsgs.find(m => m.author.id === client.user.id && m.embeds[0]?.description?.includes("جدول"));
+        const schedMsgs = await schedChan.messages.fetch({ limit: 10 });
+        const targetMsg = schedMsgs.find(m => m.author.id === client.user.id && m.embeds[0]?.title?.includes(""));
         
-        if (schedMsg) {
-            const newEmbed = await getScheduleEmbed(guild);
-            await schedMsg.edit({ embeds: [newEmbed] });
+        if (targetMsg) {
+            const newEmbed = await createScheduleEmbed(guild);
+            await targetMsg.edit({ embeds: [newEmbed] });
         }
 
-        const statsChan = await client.channels.fetch(CHANNELS.STATS);
+        // تحديث الإحصائيات
         if (db.config.statsMessageId) {
-            const sMsg = await statsChan.messages.fetch(db.config.statsMessageId).catch(() => null);
-            if (sMsg) {
-                let statsText = "";
+            const statsChan = await client.channels.fetch(CHANNELS.STATS);
+            const statsMsg = await statsChan.messages.fetch(db.config.statsMessageId).catch(() => null);
+            if (statsMsg) {
+                let statsLines = [];
                 for (const [id, data] of Object.entries(db.stats)) {
-                    const name = await getDisplayName(id, guild);
-                    if (name !== "🔴 متاح للحجز") {
-                        statsText += `• **${name}**: \`${(data.totalMinutes / 60).toFixed(2)}\` ساعة\n`;
-                    }
+                    const name = await fetchName(id, guild);
+                    statsLines.push(`• **${name}**: \`${(data.totalMinutes / 60).toFixed(2)}\` ساعة`);
                 }
-                await sMsg.edit({ embeds: [new EmbedBuilder().setTitle("📊 إحصائيات ساعات العمل").setDescription(statsText || "لا توجد بيانات مسجلة").setColor("#3BA55C")] });
+                const statsEmbed = new EmbedBuilder()
+                    .setTitle("📊 إحصائيات الساعات المسجلة")
+                    .setDescription(statsLines.join('\n') || "لا توجد بيانات")
+                    .setColor("#3BA55C");
+                await statsMsg.edit({ embeds: [statsEmbed] });
             }
         }
-    } catch (e) { console.error("Update Error:", e.message); }
+    } catch (err) { console.error("Update failed:", err.message); }
 }
 
-client.once('ready', () => console.log(`✅ ${client.user.tag} Is Active`));
+client.once('ready', () => console.log(`Logged in as ${client.user.tag}`));
 
 client.on('interactionCreate', async interaction => {
     if (!interaction.guild) return;
@@ -128,77 +131,71 @@ client.on('interactionCreate', async interaction => {
     if (interaction.isButton()) {
         if (customId === 'btn_book') {
             const options = hours.filter(h => !db.schedule[h].owner).map(h => ({ label: h, value: h }));
-            if (options.length === 0) return interaction.reply({ content: "⚠️ جميع الساعات محجوزة!", ephemeral: true });
+            if (options.length === 0) return interaction.reply({ content: "الجدول ممتلئ!", ephemeral: true });
             
-            const menu = new ActionRowBuilder().addComponents(
-                new StringSelectMenuBuilder()
-                    .setCustomId('menu_book')
-                    .setPlaceholder('اختر الساعة التي تريد حجزها...')
-                    .addOptions(options.slice(0, 25))
+            const row = new ActionRowBuilder().addComponents(
+                new StringSelectMenuBuilder().setCustomId('menu_book').setPlaceholder('اختر وقت الشيفت').addOptions(options.slice(0, 25))
             );
-            await interaction.reply({ content: "📅 اختر وقت الشيفت الخاص بك:", components: [menu], ephemeral: true });
+            return interaction.reply({ content: "اختر الساعة المناسبة لك:", components: [row], ephemeral: true });
         }
 
         if (customId === 'check_in') {
             if (!db.stats[userId]) db.stats[userId] = { totalMinutes: 0, lastLogin: null };
-            if (db.stats[userId].lastLogin) return interaction.reply({ content: "⚠️ أنت مسجل دخول بالفعل!", ephemeral: true });
+            if (db.stats[userId].lastLogin) return interaction.reply({ content: "أنت مسجل دخول بالفعل!", ephemeral: true });
             
             db.stats[userId].lastLogin = Date.now();
             save();
-            
-            const currentH = hours[new Date().getHours()];
-            if (db.config.lastMentionId[currentH]) {
+
+            const curH = hours[new Date().getHours()];
+            if (db.config.lastMentionId[curH]) {
                 const chan = await client.channels.fetch(CHANNELS.ATTENDANCE);
-                chan.messages.fetch(db.config.lastMentionId[currentH]).then(m => m.delete()).catch(() => null);
-                delete db.config.lastMentionId[currentH];
+                const m = await chan.messages.fetch(db.config.lastMentionId[curH]).catch(() => null);
+                if (m) await m.delete();
+                delete db.config.lastMentionId[curH];
                 save();
             }
-            await interaction.reply({ content: "✅ تم تسجيل دخولك بنجاح. بالتوفيق في عملك!", ephemeral: true });
+            return interaction.reply({ content: "✅ تم تسجيل دخولك بنجاح.", ephemeral: true });
         }
 
         if (customId === 'check_out') {
-            if (!db.stats[userId]?.lastLogin) return interaction.reply({ content: "⚠️ لم تقم بتسجيل الدخول!", ephemeral: true });
-            const minutes = (Date.now() - db.stats[userId].lastLogin) / 60000;
-            db.stats[userId].totalMinutes += minutes;
+            if (!db.stats[userId]?.lastLogin) return interaction.reply({ content: "لم تسجل دخولك!", ephemeral: true });
+            const mins = (Date.now() - db.stats[userId].lastLogin) / 60000;
+            db.stats[userId].totalMinutes += mins;
             db.stats[userId].lastLogin = null;
-            save();
-            await interaction.reply({ content: `✅ تم تسجيل الخروج. تمت إضافة \`${minutes.toFixed(1)}\` دقيقة.`, ephemeral: true });
-            await updateGlobalMessages(guild);
+            await forceUpdate(guild);
+            return interaction.reply({ content: `✅ تم تسجيل خروجك. (+${mins.toFixed(1)} دقيقة)`, ephemeral: true });
         }
 
         if (customId === 'btn_clear') {
             for (let h in db.schedule) { if (db.schedule[h].owner === userId) db.schedule[h].owner = null; }
-            save();
-            await interaction.reply({ content: "✅ تم إلغاء حجزك بنجاح.", ephemeral: true });
-            await updateGlobalMessages(guild);
+            await forceUpdate(guild);
+            return interaction.reply({ content: "✅ تم إلغاء حجزك.", ephemeral: true });
         }
-
+        
         if (customId === 'btn_swap') {
-            const row = new ActionRowBuilder().addComponents(new UserSelectMenuBuilder().setCustomId('menu_swap_user').setPlaceholder('اختر الزميل للتبديل معه'));
-            await interaction.reply({ content: "🔃 اختر الشخص الذي تود مبادلة شفتك معه:", components: [row], ephemeral: true });
+            const row = new ActionRowBuilder().addComponents(new UserSelectMenuBuilder().setCustomId('menu_swap').setPlaceholder('اختر الزميل'));
+            return interaction.reply({ content: "اختر الشخص المراد التبديل معه:", components: [row], ephemeral: true });
         }
     }
 
     if (interaction.isStringSelectMenu() && customId === 'menu_book') {
-        const selectedHour = interaction.values[0];
-        db.schedule[selectedHour].owner = userId;
-        save();
-        await interaction.update({ content: `✅ تم حجز الساعة: **${selectedHour}** بنجاح!`, components: [] });
-        await updateGlobalMessages(guild);
+        const selected = interaction.values[0];
+        db.schedule[selected].owner = userId;
+        await interaction.update({ content: `✅ تم حجز ساعة ${selected}`, components: [] });
+        await forceUpdate(guild);
     }
 
-    if (interaction.isUserSelectMenu() && customId === 'menu_swap_user') {
-        const targetId = interaction.values[0];
-        let myS = Object.keys(db.schedule).filter(h => db.schedule[h].owner === userId);
-        let trgS = Object.keys(db.schedule).filter(h => db.schedule[h].owner === targetId);
+    if (interaction.isUserSelectMenu() && customId === 'menu_swap') {
+        const target = interaction.values[0];
+        let myShifts = Object.keys(db.schedule).filter(h => db.schedule[h].owner === userId);
+        let trgShifts = Object.keys(db.schedule).filter(h => db.schedule[h].owner === target);
 
-        if (!myS.length || !trgS.length) return interaction.reply({ content: "⚠️ يجب أن يكون للطرفين ساعات محجوزة للتبديل!", ephemeral: true });
+        if (!myShifts.length || !trgShifts.length) return interaction.reply({ content: "لا يوجد شفتات متبادلة!", ephemeral: true });
 
-        myS.forEach(h => db.schedule[h].owner = targetId);
-        trgS.forEach(h => db.schedule[h].owner = userId);
-        save();
-        await interaction.reply({ content: `✅ تم تبديل الشفتات مع <@${targetId}> بنجاح!`, ephemeral: true });
-        await updateGlobalMessages(guild);
+        myShifts.forEach(h => db.schedule[h].owner = target);
+        trgShifts.forEach(h => db.schedule[h].owner = userId);
+        await forceUpdate(guild);
+        return interaction.reply({ content: "✅ تم تبديل الشفتات.", ephemeral: true });
     }
 });
 
@@ -207,27 +204,41 @@ client.on('messageCreate', async message => {
         const schedChan = await client.channels.fetch(CHANNELS.SCHEDULE);
         const schedRow = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId('btn_book').setLabel('حجز شفت').setStyle(ButtonStyle.Primary),
-            new ButtonBuilder().setCustomId('btn_swap').setLabel('تبديل شفت').setStyle(ButtonStyle.Secondary),
-            new ButtonBuilder().setCustomId('btn_clear').setLabel('إلغاء حجز').setStyle(ButtonStyle.Danger)
+            new ButtonBuilder().setCustomId('btn_swap').setLabel('تبديل').setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId('btn_clear').setLabel('إلغاء').setStyle(ButtonStyle.Danger)
         );
-        await schedChan.send({ embeds: [await getScheduleEmbed(message.guild)], components: [schedRow] });
+        await schedChan.send({ embeds: [await createScheduleEmbed(message.guild)], components: [schedRow] });
 
         const attendChan = await client.channels.fetch(CHANNELS.ATTENDANCE);
         const attendRow = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId('check_in').setLabel('تسجيل دخول').setStyle(ButtonStyle.Success),
             new ButtonBuilder().setCustomId('check_out').setLabel('تسجيل خروج').setStyle(ButtonStyle.Danger)
         );
-        await attendChan.send({ 
-            embeds: [new EmbedBuilder().setTitle("⏱️ نظام الحضور والانصراف").setDescription("سجل دخولك عند بدء الشفت ليتم احتساب الساعات ومسح التنبيه التلقائي.").setColor("#2F3136")],
-            components: [attendRow] 
-        });
+        await attendChan.send({ embeds: [new EmbedBuilder().setTitle("⏱️ تسجيل الحضور").setDescription("سجل دخولك لمسح التنبيه.")], components: [attendRow] });
 
         const statsChan = await client.channels.fetch(CHANNELS.STATS);
-        const statsMsg = await statsChan.send({ embeds: [new EmbedBuilder().setTitle("📊 إحصائيات العمل").setDescription("بانتظار البيانات...")] });
-        db.config.statsMessageId = statsMsg.id;
+        const sMsg = await statsChan.send({ embeds: [new EmbedBuilder().setTitle("📊 الإحصائيات").setDescription("بانتظار البيانات")] });
+        db.config.statsMessageId = sMsg.id;
         save();
-        message.reply("✅ تم إعداد النظام بالكامل بشكل احترافي.");
+        message.reply("✅ تمت عملية الإعداد!");
     }
 });
+
+// نظام التنبيه
+setInterval(async () => {
+    const now = new Date();
+    const curH = hours[now.getHours()];
+    const owner = db.schedule[curH]?.owner;
+    if (owner && (!db.stats[owner] || !db.stats[owner].lastLogin)) {
+        try {
+            const chan = await client.channels.fetch(CHANNELS.ATTENDANCE);
+            if (!db.config.lastMentionId[curH]) {
+                const m = await chan.send(`⚠️ <@${owner}> بدأ شيفتك الآن (${curH})`);
+                db.config.lastMentionId[curH] = m.id;
+                save();
+            }
+        } catch (e) {}
+    }
+}, 60000);
 
 client.login(TOKEN);
